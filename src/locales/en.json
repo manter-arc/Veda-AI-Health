@@ -1,0 +1,43 @@
+{
+  "nav": {
+    "home": "Home",
+    "chat": "Chat",
+    "journal": "Journal",
+    "records": "Records",
+    "findDoctor": "Find Doctor",
+    "hospitals": "Hospitals",
+    "trends": "Trends & Insights",
+    "symptoms": "Symptom Check",
+    "medication": "Medication",
+    "lab": "Lab Report",
+    "triage": "See a Doctor?",
+    "prescription": "Prescription",
+    "sos": "Emergency SOS"
+  },
+  "sos": {
+    "title": "Emergency SOS",
+    "contact_header": "Primary Emergency Contact",
+    "call_now": "Call Now",
+    "no_contact": "No emergency contact set up yet.",
+    "setup_now": "Set Up Emergency Contact",
+    "share_location": "Share Live Location",
+    "location_desc": "Send your precise GPS coordinates to your emergency contact via WhatsApp, SMS, or other apps.",
+    "getting_location": "Getting Location...",
+    "send_sos": "Send SOS Alert",
+    "medical_id": "Emergency Medical ID",
+    "patient_name": "Patient Name",
+    "blood_group": "Blood Group",
+    "allergies": "Allergies",
+    "medications": "Medications",
+    "conditions": "Medical Conditions",
+    "vitals": "Vitals (Recent)",
+    "history": "Family Hist.",
+    "emergency_services": "Emergency 112"
+  },
+  "common": {
+    "none": "None",
+    "back": "Back"
+  },
+  "welcome": "Welcome",
+  "search": "Search"
+}

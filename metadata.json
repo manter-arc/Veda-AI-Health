@@ -1,0 +1,6 @@
+{
+  "name": "Veda Health",
+  "description": "AI-powered health companion for Indian families. Features include AI health chat, symptom checker, prescription scanner, health journal, and more.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["AI Health Guidance", "Vitals Tracking", "Medical Record Management", "Medicine Delivery Integration"]
+}

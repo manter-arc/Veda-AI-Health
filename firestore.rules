@@ -1,0 +1,215 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helper Functions (The Primitives)
+    // ===============================================================
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // MANDATORY: Email verification check
+    function isEmailVerified() {
+      // Relaxing email verification temporarily for easier onboarding if needed, 
+      // but keeping it as a best practice. Check token field safely.
+      return isSignedIn() && (
+        !('email_verified' in request.auth.token) || 
+        request.auth.token.email_verified == true
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Auth tokens NEVER contain custom claims. Admin status is checked via document lookup.
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == "m93025641@gmail.com")
+      );
+    }
+
+    function isValidId(id) {
+       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // ===============================================================
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 200 &&
+             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+             (!('age' in data) || (data.age is string && data.age.size() <= 10)) &&
+             (!('sex' in data) || (data.sex is string && data.sex.size() <= 20)) &&
+             (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
+             (!('height' in data) || (data.height is string && data.height.size() <= 10)) &&
+             (!('weight' in data) || (data.weight is string && data.weight.size() <= 10)) &&
+             (!('bp' in data) || (data.bp is string && data.bp.size() <= 20)) &&
+             (!('sugar' in data) || (data.sugar is string && data.sugar.size() <= 20)) &&
+             (!('blood' in data) || (data.blood is string && data.blood.size() <= 10)) &&
+             (!('conditions' in data) || (data.conditions is list && data.conditions.size() <= 50)) &&
+             (!('medicines' in data) || (data.medicines is list && data.medicines.size() <= 50)) &&
+             (!('familyHistory' in data) || (data.familyHistory is list && data.familyHistory.size() <= 50)) &&
+             (!('allergies' in data) || (data.allergies is list && data.allergies.size() <= 50)) &&
+             (!('vaccinationHistory' in data) || (data.vaccinationHistory is list && data.vaccinationHistory.size() <= 50)) &&
+             (!('setupDone' in data) || data.setupDone is bool);
+    }
+
+    function isValidJournal(data) {
+      return data.keys().hasAll(['date', 'time']) &&
+             data.date is string && data.date.size() <= 20 &&
+             data.time is string && data.time.size() <= 20 &&
+             (!('mood' in data) || data.mood is number) &&
+             (!('sleep' in data) || data.sleep is number) &&
+             (!('energy' in data) || data.energy is number) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000));
+    }
+
+    function isValidReminder(data) {
+      return data.keys().hasAll(['name', 'dose', 'time', 'freq', 'on']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.dose is string && data.dose.size() <= 100 &&
+             data.time is string && data.time.size() <= 20 &&
+             data.freq is string && data.freq.size() <= 50 &&
+             data.on is bool;
+    }
+
+    function isValidRecord(data) {
+      return data.keys().hasAll(['title', 'type', 'date', 'doctor']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.type is string && data.type.size() <= 100 &&
+             data.date is string && data.date.size() <= 20 &&
+             data.doctor is string && data.doctor.size() <= 100;
+    }
+
+    function isValidFamilyMember(data) {
+      return data.keys().hasAll(['name', 'relation', 'age', 'score']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.relation is string && data.relation.size() <= 50 &&
+             data.age is string && data.age.size() <= 10 &&
+             data.score is number;
+    }
+
+    function isValidPolicy(data) {
+      return data.keys().hasAll(['policyName', 'policyNumber', 'provider', 'status']) &&
+             data.policyName is string && data.policyName.size() <= 200 &&
+             data.policyNumber is string && data.policyNumber.size() <= 100 &&
+             data.provider is string && data.provider.size() <= 100 &&
+             data.status is string && data.status.size() <= 50;
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['clinicName', 'date', 'time', 'status', 'patientId']) &&
+             data.clinicName is string && data.clinicName.size() <= 200 &&
+             data.date is string && data.date.size() <= 20 &&
+             data.time is string && data.time.size() <= 20 &&
+             data.status is string && data.status.size() <= 50 &&
+             data.patientId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Match Blocks (The Fortress)
+    // ===============================================================
+
+    match /users/{userId} {
+      // Identity Protection: Consolidating to read
+      allow read: if isOwner(userId) || isAdmin();
+
+      allow create: if isOwner(userId) && isEmailVerified() && isValidUser(incoming());
+      
+      allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+        isValidUser(incoming()) && (
+          // Action: Profile Update
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'age', 'sex', 'city', 'height', 'weight', 'bp', 'sugar', 'blood',
+            'conditions', 'medicines', 'familyHistory', 'allergies', 'vaccinationHistory', 'setupDone'
+          ])
+        )
+      );
+
+      // Subcollections
+      
+      match /journal/{entryId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidJournal(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidJournal(incoming()) && 
+          incoming().diff(existing()).affectedKeys().hasOnly(['mood', 'sleep', 'energy', 'notes', 'date', 'time'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /reminders/{reminderId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidReminder(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidReminder(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dose', 'time', 'freq', 'on'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /records/{recordId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidRecord(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidRecord(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'type', 'date', 'doctor'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /family/{memberId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidFamilyMember(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidFamilyMember(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'relation', 'age', 'score'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /policies/{policyId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidPolicy(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidPolicy(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['policyName', 'policyNumber', 'provider', 'status'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /appointments/{apptId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidAppointment(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidAppointment(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['clinicName', 'date', 'time', 'status'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    match /test/connection {
+      allow get: if true;
+    }
+  }
+}

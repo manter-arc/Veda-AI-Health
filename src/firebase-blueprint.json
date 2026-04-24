@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Represents a booked medical appointment.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clinicId": { "type": "string" },
+        "clinicName": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "status": { "type": "string", "enum": ["upcoming", "completed", "cancelled"] },
+        "patientName": { "type": "string" },
+        "patientId": { "type": "string" },
+        "type": { "type": "string" }
+      },
+      "required": ["id", "clinicId", "date", "time", "patientId"]
+    }
+  },
+  "firestore": {
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "Appointment" },
+      "description": "Collection of all appointments."
+    }
+  }
+}
