@@ -11,7 +11,13 @@ export interface UserProfile {
   sugar: string;
   blood: string;
   conditions: string[];
-  medicines: { name: string; dose: string }[];
+  medicines: { 
+    name: string; 
+    dose: string; 
+    dailyFrequency: number; 
+    totalQuantity: number; 
+    lastRefillDate: string; 
+  }[];
   familyHistory: string[];
   allergies: string[];
   vaccinationHistory: string[];
@@ -23,6 +29,25 @@ export interface UserProfile {
   setupDone: boolean;
   notificationsEnabled?: boolean;
   updatedAt?: string;
+  isPremium?: boolean;
+  accessLogs?: AccessLogEntry[];
+  familyPermissions?: FamilyPermission[];
+}
+
+export interface AccessLogEntry {
+  id: string;
+  resource: string;
+  action: 'view' | 'export' | 'update';
+  timestamp: string;
+  accessedBy: string;
+}
+
+export interface FamilyPermission {
+  memberId: string;
+  name: string;
+  canViewAlerts: boolean;
+  canViewMedications: boolean;
+  canViewRecords: boolean;
 }
 
 export interface JournalEntry {
@@ -181,4 +206,5 @@ export type AppMode =
   | 'trust'
   | 'wellness'
   | 'sos'
+  | 'membership'
   | 'profile';

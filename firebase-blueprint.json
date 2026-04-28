@@ -17,7 +17,19 @@
         "sugar": { "type": "string" },
         "blood": { "type": "string" },
         "conditions": { "type": "array", "items": { "type": "string" } },
-        "medicines": { "type": "array", "items": { "type": "object" } },
+        "medicines": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "dose": { "type": "string" },
+              "dailyFrequency": { "type": "integer" },
+              "totalQuantity": { "type": "integer" },
+              "lastRefillDate": { "type": "string", "format": "date" }
+            }
+          } 
+        },
         "familyHistory": { "type": "array", "items": { "type": "string" } },
         "allergies": { "type": "array", "items": { "type": "string" } },
         "vaccinationHistory": { "type": "array", "items": { "type": "string" } },
@@ -28,6 +40,7 @@
         "corporateId": { "type": "string" },
         "setupDone": { "type": "boolean" },
         "notificationsEnabled": { "type": "boolean" },
+        "isPremium": { "type": "boolean" },
         "updatedAt": { "type": "string" }
       },
       "required": ["uid", "email"]
@@ -91,6 +104,29 @@
         "time": { "type": "string" },
         "status": { "type": "string" }
       }
+    },
+    "AccessLog": {
+      "title": "Access Log",
+      "description": "Trail of data access",
+      "type": "object",
+      "properties": {
+        "resource": { "type": "string" },
+        "action": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "accessedBy": { "type": "string" }
+      }
+    },
+    "FamilyPermission": {
+      "title": "Family Permission",
+      "description": "Permission for family sync",
+      "type": "object",
+      "properties": {
+        "memberId": { "type": "string" },
+        "name": { "type": "string" },
+        "canViewAlerts": { "type": "boolean" },
+        "canViewMedications": { "type": "boolean" },
+        "canViewRecords": { "type": "boolean" }
+      }
     }
   },
   "firestore": {
@@ -116,6 +152,12 @@
     },
     "users/{userId}/appointments/{apptId}": {
       "schema": "appointment"
+    },
+    "users/{userId}/accessLogs/{logId}": {
+      "schema": "AccessLog"
+    },
+    "users/{userId}/familyPermissions/{permId}": {
+      "schema": "FamilyPermission"
     }
   }
 }

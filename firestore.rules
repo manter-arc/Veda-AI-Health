@@ -66,7 +66,11 @@ service cloud.firestore {
              (!('sugar' in data) || (data.sugar is string && data.sugar.size() <= 50)) &&
              (!('blood' in data) || (data.blood is string && data.blood.size() <= 20)) &&
              (!('conditions' in data) || (data.conditions is list && data.conditions.size() <= 100)) &&
-             (!('medicines' in data) || (data.medicines is list && data.medicines.size() <= 100)) &&
+             (!('medicines' in data) || (data.medicines is list && data.medicines.size() <= 100 && 
+                (data.medicines.size() == 0 || 
+                 (data.medicines[0].name is string && data.medicines[0].dose is string && 
+                  data.medicines[0].dailyFrequency is int && data.medicines[0].totalQuantity is int && 
+                  data.medicines[0].lastRefillDate is string)))) &&
              (!('familyHistory' in data) || (data.familyHistory is list && data.familyHistory.size() <= 100)) &&
              (!('allergies' in data) || (data.allergies is list && data.allergies.size() <= 100)) &&
              (!('vaccinationHistory' in data) || (data.vaccinationHistory is list && data.vaccinationHistory.size() <= 100)) &&
@@ -77,6 +81,7 @@ service cloud.firestore {
              (!('corporateId' in data) || (data.corporateId is string && data.corporateId.size() <= 100)) &&
              (!('setupDone' in data) || data.setupDone is bool) &&
              (!('notificationsEnabled' in data) || data.notificationsEnabled is bool) &&
+             (!('isPremium' in data) || data.isPremium is bool) &&
              (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 100));
     }
 
@@ -132,6 +137,22 @@ service cloud.firestore {
              data.patientId == request.auth.uid;
     }
 
+    function isValidAccessLog(data) {
+      return data.keys().hasAll(['resource', 'action', 'timestamp', 'accessedBy']) &&
+             data.resource is string && data.resource.size() <= 100 &&
+             data.action in ['view', 'export', 'update'] &&
+             data.timestamp is string &&
+             data.accessedBy is string;
+    }
+
+    function isValidFamilyPermission(data) {
+      return data.keys().hasAll(['memberId', 'name', 'canViewAlerts', 'canViewMedications', 'canViewRecords']) &&
+             data.memberId is string &&
+             data.name is string &&
+             data.canViewAlerts is bool &&
+             data.canViewMedications is bool;
+    }
+
     // ===============================================================
     // Match Blocks (The Fortress)
     // ===============================================================
@@ -149,7 +170,7 @@ service cloud.firestore {
             'uid', 'email', 'name', 'age', 'sex', 'city', 'height', 'weight', 'bp', 'sugar', 'blood',
             'conditions', 'medicines', 'familyHistory', 'allergies', 'vaccinationHistory', 'setupDone',
             'emergencyContactName', 'emergencyContactPhone', 'emergencyContactRelation', 'company', 'corporateId',
-            'notificationsEnabled', 'updatedAt'
+            'notificationsEnabled', 'isPremium', 'updatedAt'
           ])
         )
       );
@@ -212,6 +233,21 @@ service cloud.firestore {
         allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
           isValidAppointment(incoming()) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['clinicName', 'date', 'time', 'status'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /accessLogs/{logId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidAccessLog(incoming());
+      }
+
+      match /familyPermissions/{permId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidFamilyPermission(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidFamilyPermission(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['canViewAlerts', 'canViewMedications', 'canViewRecords'])
         );
         allow delete: if isOwner(userId) || isAdmin();
       }

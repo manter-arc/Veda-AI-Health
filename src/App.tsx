@@ -266,7 +266,8 @@ function AppContent() {
 
   const [profile, setProfile] = useState<UserProfile>({
     name: '', age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
-    conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], setupDone: false
+    conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], 
+    setupDone: false, isPremium: false
   });
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
@@ -1473,6 +1474,7 @@ function AppContent() {
     {mode:'teleconsult', icon:'📹', label:'Video Call', color:'#4da6ff'},
     {mode:'calendar', icon:'📅', label:'Calendar', color:'#f0a030'},
     {mode:'bmi', icon:'⚖️', label:'BMI Calc', color:'#00d4b1'},
+    {mode:'membership', icon:'✦', label:'Premium', color:'#fbbf24'},
   ];
 
   const handleRefresh = async () => {
@@ -1646,11 +1648,11 @@ function AppContent() {
                 {mode === 'score' && <HealthScoreView journal={journal} profile={profile} switchMode={switchMode} />}
                 {mode === 'vitals' && <VitalsGraph journal={journal} initialTab={vitalsTab} onAddEntry={addJournalEntry} />}
                 {mode === 'family' && <FamilyHealthCircle family={family} onAddMember={addFamilyMember} onUpdateMember={updateFamilyMember} onDeleteMember={deleteFamilyMember} />}
-                {mode === 'medicine' && <MedicineDelivery reminders={reminders} />}
+                {mode === 'medicine' && <MedicineDelivery reminders={reminders} profile={profile} />}
                 {mode === 'insurance' && <InsuranceView policies={policies} onAddPolicy={addPolicy} profile={profile} />}
                 {mode === 'hospital' && <HospitalView />}
                 {mode === 'doctor' && <DoctorView />}
-                {mode === 'records' && <RecordsView records={records} onAddRecord={addRecord} />}
+                {mode === 'records' && <RecordsView records={records} onAddRecord={addRecord} profile={profile} />}
                 {mode === 'alerts' && (
                   <AlertsView 
                     profile={profile} 
@@ -1670,13 +1672,13 @@ function AppContent() {
                   />
                 )}
                 {mode === 'calendar' && <HealthCalendar />}
-                {mode === 'skin' && <SkinScanner />}
-                {mode === 'food' && <FoodScanner />}
+                {mode === 'skin' && <PremiumGate profile={profile} featureName="Advanced Skin AI Analysis" onUpgrade={() => setMode('membership')}><SkinScanner /></PremiumGate>}
+                {mode === 'food' && <PremiumGate profile={profile} featureName="Smart Nutrition & Calorie Tracking" onUpgrade={() => setMode('membership')}><FoodScanner /></PremiumGate>}
                 {mode === 'mind' && <MindWellnessDashboard journal={journal} />}
                 {mode === 'roadmap' && <HealthRoadmapDashboard profile={profile} />}
-                {mode === 'patterns' && <TrendsInsights journal={journal} />}
+                {mode === 'patterns' && <PremiumGate profile={profile} featureName="AI Health Pattern Recognition" onUpgrade={() => setMode('membership')}><TrendsInsights journal={journal} /></PremiumGate>}
                 {mode === 'advice' && <AdviceView journal={journal} profile={profile} />}
-                {mode === 'opinion' && <OpinionView profile={profile} />}
+                {mode === 'opinion' && <PremiumGate profile={profile} featureName="Expert Second Medical Opinion" onUpgrade={() => setMode('membership')}><OpinionView profile={profile} /></PremiumGate>}
                 {mode === 'clinic' && <ClinicPortal appointments={appointments} profile={profile} onBook={bookAppointment} />}
                 {mode === 'corporate' && <CorporateHealth profile={profile} updateProfile={updateProfile} />}
                 {mode === 'edu' && <MedEducation />}
@@ -1688,6 +1690,11 @@ function AppContent() {
                 {mode === 'privacy' && <PrivacyView />}
                 {mode === 'trust' && <TrustCenter />}
                 {mode === 'wellness' && <WellnessView journal={journal} />}
+                {mode === 'membership' && <MembershipView profile={profile} onUpgrade={async () => {
+                  await updateProfile({ ...profile, isPremium: true });
+                  showDoneToast("Welcome to Veda Premium! ✦");
+                  setMode('home');
+                }} />}
                 {mode === 'profile' && (
                   <ProfileView 
                     profile={profile} 
@@ -1964,6 +1971,33 @@ function HomeDashboard({
       )}
 
       <NotificationBanner permission={notificationPermission} onRequest={requestNotificationPermission} />
+
+      {/* Sponsored Wellness Tip */}
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-5 relative overflow-hidden group hover:border-[var(--teal-dim)] transition-all"
+      >
+        <div className="absolute top-0 right-0 px-3 py-1 bg-[var(--card2)] border-l border-b border-[var(--border)] text-[var(--muted)] text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-sm z-10 group-hover:bg-[var(--teal)] group-hover:text-[#020f0c] transition-colors">
+          Partner Tip
+        </div>
+        <div className="flex gap-4 items-center relative z-10">
+          <div className="w-12 h-12 rounded-2xl bg-[var(--teal)]/10 flex items-center justify-center text-[var(--teal)] shrink-0 group-hover:scale-110 transition-transform">
+            <Heart size={24} />
+          </div>
+          <div className="space-y-1">
+            <h4 className="text-sm font-bold text-[var(--text)]">Early Detection Saves Lives.</h4>
+            <p className="text-[11px] text-[var(--muted)] leading-relaxed">
+              Book a <span className="text-[var(--text)] font-bold">Full Body Checkup</span> via Apollo 24|7 & get an additional Veda health audit free.
+            </p>
+            <div className="flex items-center gap-4 pt-1">
+              <button className="text-[10px] font-black text-[var(--teal)] uppercase tracking-widest hover:brightness-110 transition-all flex items-center gap-1.5">
+                Book Trial Screen <ChevronRight size={12} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
 
       <motion.div 
         whileTap={{ scale: 0.99 }}
@@ -2881,6 +2915,51 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
           <div className="prose prose-sm prose-invert max-w-none text-[var(--text2)] leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
         </motion.div>
       )}
+
+      {/* Medication Vault */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between px-1">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Medication Vault</h3>
+          <span className="text-[9px] font-bold text-[var(--teal)] bg-[var(--teal)]/10 px-2 py-0.5 rounded-full uppercase">Your Current Meds</span>
+        </div>
+        
+        {profile.medicines.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {profile.medicines.map((mName, idx) => (
+              <div key={idx} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between group hover:border-[var(--teal-dim)] transition-all">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[var(--card2)] flex items-center justify-center text-lg">💊</div>
+                  <div className="max-w-[120px]">
+                    <h4 className="text-sm font-bold text-[var(--text)] truncate">{mName}</h4>
+                    <p className="text-[10px] text-[var(--muted)]">Prescribed</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                   <button 
+                    onClick={() => setMed(mName)}
+                    className="p-2 bg-[var(--card2)] text-[var(--muted)] rounded-lg hover:text-[var(--teal)]"
+                    title="Explain"
+                   >
+                     <Search size={14} />
+                   </button>
+                   <a 
+                    href={`https://www.1mg.com/search/all?name=${encodeURIComponent(mName)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-4 py-2 bg-gradient-to-br from-pink-500 to-rose-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all"
+                  >
+                    Refill ↗
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-[var(--card)] border border-dashed border-[var(--border)] rounded-2xl p-8 text-center opacity-60">
+            <p className="text-xs text-[var(--muted)]">No medications logged in your profile yet. Add them in your profile or scan a prescription.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4748,7 +4827,7 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
   );
 }
 
-function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
+function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profile: UserProfile }) {
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -4757,15 +4836,15 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
   const [address, setAddress] = useState({ street: '', city: '', pin: '' });
 
   const medicines = [
-    { id: 1, name: 'Paracetamol 500mg', price: 45, type: 'Tablet', brand: 'Crocin', icon: '💊' },
-    { id: 2, name: 'Amoxicillin 250mg', price: 120, type: 'Capsule', brand: 'Mox', icon: '💊' },
-    { id: 3, name: 'Vitamin C 500mg', price: 95, type: 'Tablet', brand: 'Limcee', icon: '🍊' },
-    { id: 4, name: 'Insulin Glargine', price: 650, type: 'Injection', brand: 'Lantus', icon: '💉' },
-    { id: 5, name: 'Multivitamin', price: 180, type: 'Capsule', brand: 'Revital', icon: '🧪' },
-    { id: 6, name: 'Cetirizine 10mg', price: 35, type: 'Tablet', brand: 'Okacet', icon: '💊' },
-    { id: 7, name: 'Dolo 650', price: 30, type: 'Tablet', brand: 'Micro Labs', icon: '💊' },
-    { id: 8, name: 'Allegra 120mg', price: 210, type: 'Tablet', brand: 'Sanofi', icon: '💊' },
-    { id: 9, name: 'Zandu Balm', price: 40, type: 'Ointment', brand: 'Zandu', icon: '🩹' },
+    { id: 1, name: 'Paracetamol 500mg', price: 45, type: 'Tablet', brand: 'Crocin', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Paracetamol%20500mg' },
+    { id: 2, name: 'Amoxicillin 250mg', price: 120, type: 'Capsule', brand: 'Mox', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Amoxicillin%20250mg' },
+    { id: 3, name: 'Vitamin C 500mg', price: 95, type: 'Tablet', brand: 'Limcee', icon: '🍊', affiliateUrl: 'https://www.1mg.com/search/all?name=Vitamin%20C%20500mg' },
+    { id: 4, name: 'Insulin Glargine', price: 650, type: 'Injection', brand: 'Lantus', icon: '💉', affiliateUrl: 'https://www.1mg.com/search/all?name=Insulin%20Glargine' },
+    { id: 5, name: 'Multivitamin', price: 180, type: 'Capsule', brand: 'Revital', icon: '🧪', affiliateUrl: 'https://www.1mg.com/search/all?name=Multivitamin' },
+    { id: 6, name: 'Cetirizine 10mg', price: 35, type: 'Tablet', brand: 'Okacet', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Cetirizine%2010mg' },
+    { id: 7, name: 'Dolo 650', price: 30, type: 'Tablet', brand: 'Micro Labs', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Dolo%20650' },
+    { id: 8, name: 'Allegra 120mg', price: 210, type: 'Tablet', brand: 'Sanofi', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Allegra%20120mg' },
+    { id: 9, name: 'Zandu Balm', price: 40, type: 'Ointment', brand: 'Zandu', icon: '🩹', affiliateUrl: 'https://www.1mg.com/search/all?name=Zandu%20Balm' },
   ];
 
   const filtered = medicines.filter(m => m.name.toLowerCase().includes(search.toLowerCase()) || m.brand.toLowerCase().includes(search.toLowerCase()));
@@ -4777,8 +4856,28 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
     price: 99, // default mock price
     type: r.dose || 'Unit',
     brand: 'My Prescription',
-    icon: '📦'
+    icon: '📦',
+    affiliateUrl: `https://www.1mg.com/search/all?name=${encodeURIComponent(r.name)}`
   }));
+
+  const refillAlerts = useMemo(() => {
+    const alerts: any[] = [];
+    const today = new Date();
+    
+    profile.medicines.forEach(med => {
+      const lastRefill = new Date(med.lastRefillDate);
+      const daysSinceRefill = Math.floor((today.getTime() - lastRefill.getTime()) / (1000 * 3600 * 24));
+      const medsConsumed = daysSinceRefill * med.dailyFrequency;
+      const remaining = med.totalQuantity - medsConsumed;
+      
+      // Alert if < 5 days worth left
+      if (remaining / med.dailyFrequency < 5) {
+        alerts.push({ ...med, remaining });
+      }
+    });
+
+    return alerts;
+  }, [profile.medicines]);
 
   const addToCart = (med: any) => {
     const existing = cart.find(item => item.id === med.id);
@@ -4815,6 +4914,26 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
 
   return (
     <div className="space-y-6 pb-24">
+      {refillAlerts.length > 0 && (
+        <div className="bg-gradient-to-r from-amber-500/10 to-transparent border border-amber-500/30 rounded-2xl p-6 space-y-4">
+          <h3 className="font-serif text-lg text-amber-500 flex items-center gap-2">
+            <AlertCircle size={20} /> Smart Refill Alert
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {refillAlerts.map((alert: any) => (
+              <div key={alert.name} className="flex justify-between items-center bg-[var(--card)] p-4 rounded-xl border border-[var(--border)]">
+                 <div>
+                    <p className="font-bold text-sm">{alert.name}</p>
+                    <p className="text-[10px] text-[var(--muted)]">~{Math.max(0, Math.floor(alert.remaining / alert.dailyFrequency))} days remaining</p>
+                 </div>
+                 <a href={`https://www.1mg.com/search/all?name=${encodeURIComponent(alert.name)}`} target="_blank" rel="noreferrer" className="px-4 py-2 bg-amber-500 text-white text-[10px] font-black rounded-lg hover:scale-105 transition-transform">
+                   Refill ↗
+                 </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center text-white shadow-lg">
@@ -4857,6 +4976,42 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
         )}
       </div>
 
+      {/* Brand Spotlight - Sponsored */}
+      {!search && (
+        <div className="space-y-3">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Brand Spotlight</h3>
+          <motion.div 
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="bg-gradient-to-br from-[#1a1a2e] to-[#16213e] border border-pink-500/20 rounded-3xl p-6 relative overflow-hidden group shadow-xl"
+          >
+            <div className="absolute top-0 right-0 px-3 py-1 bg-pink-500 text-white text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-lg z-10">
+              Sponsored
+            </div>
+            <div className="flex gap-5 items-center relative z-10">
+              <div className="w-20 h-20 rounded-2xl bg-white p-2 shrink-0 shadow-2xl group-hover:rotate-3 transition-transform">
+                <img src="https://images.unsplash.com/photo-1550573105-181045260170?auto=format&fit=crop&q=80&w=200" alt="Himalaya" className="w-full h-full object-contain" />
+              </div>
+              <div className="space-y-2">
+                <div className="text-pink-400 text-[10px] font-black uppercase tracking-[0.2em]">Partner Highlight</div>
+                <h4 className="font-serif text-xl leading-tight text-white">Unlock Natural Vitality with Himalaya Ashvagandha</h4>
+                <p className="text-[11px] text-white/60 leading-relaxed max-w-xs">
+                  Reduce stress and boost energy naturally. Veda members get <span className="text-pink-400 font-bold">20% Cashback</span> on your first order.
+                </p>
+                <div className="flex items-center gap-4 pt-1">
+                  <a href="https://www.1mg.com/brands/himalaya-214" target="_blank" rel="noreferrer" className="px-5 py-2 bg-pink-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:brightness-110 transition-all">
+                    Shop Now ↗
+                  </a>
+                  <span className="text-[9px] text-white/30 font-bold italic">Trusted by 1M+ users</span>
+                </div>
+              </div>
+            </div>
+            {/* Background decorative pill */}
+            <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-pink-500/5 rounded-full blur-3xl" />
+          </motion.div>
+        </div>
+      )}
+
       {search ? (
         <div className="grid gap-3">
           {filtered.length > 0 ? filtered.map(m => (
@@ -4874,14 +5029,25 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
                   <p className="text-[10px] text-[var(--muted)] font-medium">{m.brand} · {m.type}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 <span className="font-serif text-lg text-pink-500 font-bold">{formatCurrency(m.price)}</span>
-                <button 
-                  onClick={() => addToCart(m)}
-                  className="p-2 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500 hover:text-white transition-all active:scale-90"
-                >
-                  <Plus size={18} />
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <a 
+                    href={m.affiliateUrl} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="px-3 py-1.5 bg-pink-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:brightness-110 active:scale-95 transition-all"
+                  >
+                    Buy Now
+                  </a>
+                  <button 
+                    onClick={() => addToCart(m)}
+                    className="p-1.5 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500 hover:text-white transition-all active:scale-90"
+                    title="Add to Internal Cart"
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
               </div>
             </motion.div>
           )) : (
@@ -4915,12 +5081,22 @@ function MedicineDelivery({ reminders }: { reminders: Reminder[] }) {
                       <h4 className="text-sm font-bold truncate pr-4">{m.name}</h4>
                       <p className="text-[10px] text-[var(--muted)] truncate">{m.type}</p>
                     </div>
-                    <button 
-                      onClick={() => addToCart(m)}
-                      className="w-full py-2 bg-[var(--card2)] border border-[var(--border)] hover:bg-pink-500 hover:text-white hover:border-pink-500 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
-                    >
-                      Add Refill
-                    </button>
+                    <div className="grid grid-cols-1 gap-2">
+                      <a 
+                        href={m.affiliateUrl} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="w-full py-2 bg-pink-500 text-white border border-pink-500 hover:brightness-110 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-center"
+                      >
+                        Refill Now ↗
+                      </a>
+                      <button 
+                        onClick={() => addToCart(m)}
+                        className="w-full py-2 bg-[var(--card2)] border border-[var(--border)] hover:bg-[var(--card)] rounded-xl text-[9px] font-bold uppercase tracking-widest transition-all text-[var(--muted)]"
+                      >
+                        Add to local cart
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -5487,6 +5663,34 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
 
       {activeTab === 'advisor' && (
         <div className="space-y-6">
+          {/* Sponsored Placement */}
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-gradient-to-br from-indigo-900/40 to-blue-900/40 border border-blue-500/30 rounded-3xl p-6 relative overflow-hidden group shadow-2xl shadow-blue-500/10"
+          >
+            <div className="absolute top-0 right-0 px-3 py-1 bg-blue-500 text-white text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-lg z-10">
+              Sponsored
+            </div>
+            <div className="flex gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center text-blue-400 shrink-0 border border-white/10 group-hover:scale-110 transition-transform">
+                <ShieldCheck size={28} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <h4 className="font-serif text-lg leading-tight">Zero-Copay Premium Plan</h4>
+                  <span className="text-[10px] px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full font-bold uppercase tracking-widest">New</span>
+                </div>
+                <p className="text-xs text-blue-100/70 leading-relaxed">
+                  Tired of paying during hospital discharge? Upgrade to a Zero-Copay plan with Niva Bupa & Veda. Get <span className="text-blue-400 font-bold underline">15% Off</span> exclusively for Veda users.
+                </p>
+                <button className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-blue-400 hover:text-blue-300 transition-colors pt-1">
+                  Check Eligibility <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+
           <div className="bg-gradient-to-br from-blue-600 to-blue-800 rounded-[40px] p-8 text-white space-y-6 shadow-xl relative overflow-hidden">
             <div className="space-y-2 relative z-10">
               <h3 className="font-serif text-3xl leading-tight">Advisor Intelligence</h3>
@@ -7705,8 +7909,8 @@ function HospitalView() {
   );
 }
 
-function RecordsView({ records, onAddRecord }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void }) {
-  const [activeTab, setActiveTab] = useState<'all' | 'reports' | 'rx' | 'scans'>('all');
+function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
+  const [activeTab, setActiveTab] = useState<'all' | 'reports' | 'rx' | 'scans' | 'meds'>('all');
   const [isUploading, setIsUploading] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<MedicalRecord | null>(null);
   const [isScanOpen, setIsScanOpen] = useState(false);
@@ -7791,7 +7995,7 @@ function RecordsView({ records, onAddRecord }: { records: MedicalRecord[], onAdd
 
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-6 shadow-xl">
         <div className="flex justify-center gap-1.5 overflow-x-auto pb-2 scrollbar-hide">
-          {['all', 'reports', 'rx', 'scans'].map((tab) => (
+          {['all', 'reports', 'rx', 'meds', 'scans'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab as any)}
@@ -7800,7 +8004,7 @@ function RecordsView({ records, onAddRecord }: { records: MedicalRecord[], onAdd
                 activeTab === tab ? "bg-amber-500 text-white shadow-lg shadow-amber-500/20" : "bg-[var(--card2)] text-[var(--muted)] hover:text-amber-400"
               )}
             >
-              {tab}
+              {tab === 'meds' ? 'Medication Vault' : tab}
             </button>
           ))}
         </div>
@@ -7827,8 +8031,42 @@ function RecordsView({ records, onAddRecord }: { records: MedicalRecord[], onAdd
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--muted)] px-1">Storage ({filtered.length})</h3>
-        {filtered.length > 0 ? filtered.map((rec) => (
+        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--muted)] px-1">
+          {activeTab === 'meds' ? 'Direct Orders' : `Storage (${filtered.length})`}
+        </h3>
+        
+        {activeTab === 'meds' ? (
+          <div className="space-y-3">
+            {profile.medicines.length > 0 ? profile.medicines.map((mName, idx) => (
+              <div key={idx} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between group hover:border-amber-500/30 transition-all">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-[var(--card2)] flex items-center justify-center text-amber-500">
+                    <Pill size={22} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-[var(--text)] uppercase tracking-tight">{mName}</h3>
+                    <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-0.5">Active Prescription</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                   <a 
+                    href={`https://www.1mg.com/search/all?name=${encodeURIComponent(mName)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-4 py-2 bg-gradient-to-br from-amber-500 to-orange-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all"
+                  >
+                    Refill Now ↗
+                  </a>
+                </div>
+              </div>
+            )) : (
+              <div className="bg-[var(--card)] border border-dashed border-[var(--border)] rounded-3xl p-12 text-center">
+                <Pill size={40} className="mx-auto text-[var(--muted)] mb-4 opacity-20" />
+                <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">No medicines in vault</p>
+              </div>
+            )}
+          </div>
+        ) : filtered.length > 0 ? filtered.map((rec) => (
           <div 
             key={rec.id} 
             onClick={() => setSelectedRecord(rec)}
@@ -9909,5 +10147,133 @@ function PrivacyView() {
         </div>
       </div>
     </motion.div>
+  );
+}
+
+// --- Premium & Membership Components ---
+
+/**
+ * PremiumGate: A wrapper that shows a "Premium" modal/overlay if the user is not a premium member.
+ */
+function PremiumGate({ profile, featureName, onUpgrade, children }: { 
+  profile: UserProfile, 
+  featureName: string, 
+  onUpgrade: () => void,
+  children: React.ReactNode 
+}) {
+  if (profile.isPremium) return <>{children}</>;
+
+  return (
+    <div className="relative min-h-[400px] w-full bg-[var(--card)] border border-[var(--border)] rounded-3xl overflow-hidden shadow-inner group">
+      {/* Blurred preview of the content */}
+      <div className="absolute inset-0 blur-md grayscale opacity-20 pointer-events-none select-none">
+        {children}
+      </div>
+      
+      {/* Premium Overlay */}
+      <div className="absolute inset-0 bg-gradient-to-b from-[var(--bg)]/40 via-[var(--bg)]/90 to-[var(--bg)] flex flex-col items-center justify-center p-8 text-center space-y-6 z-20">
+        <div className="w-20 h-20 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500 animate-pulse border border-amber-500/20 backdrop-blur-sm">
+          <Sparkles size={40} />
+        </div>
+        
+        <div className="space-y-2">
+          <h3 className="font-serif text-3xl tracking-tight text-[var(--text)]">Unlock Veda Premium</h3>
+          <p className="text-sm text-[var(--muted)] max-w-xs mx-auto">
+            {featureName} is a high-performance feature reserved for Veda Premium members.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 w-full max-w-xs">
+          <button 
+            onClick={onUpgrade}
+            className="w-full py-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-black uppercase tracking-widest text-xs rounded-2xl shadow-xl hover:shadow-amber-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+          >
+            <Zap size={16} />
+            Upgrade Now
+          </button>
+          
+          <div className="flex items-center gap-2 justify-center text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">
+            <Shield size={10} />
+            Secure Payment Integration
+          </div>
+        </div>
+
+        <div className="pt-4 grid grid-cols-2 gap-4 w-full max-w-xs text-left">
+           {[ { label: "Unlimited Deep Dives" }, { label: "Priority AI Diagnosis" }, { label: "Expert 2nd Opinions" }, { label: "Advanced Wellness Plan" } ].map((item, i) => (
+             <div key={i} className="flex gap-2 items-center">
+               <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500 shrink-0"><Check size={12} /></div>
+               <div className="text-[10px] text-[var(--text2)] font-medium leading-tight">{item.label}</div>
+             </div>
+           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MembershipView({ profile, onUpgrade }: { profile: UserProfile, onUpgrade: () => Promise<void> }) {
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleUpgrade = async () => {
+    setIsProcessing(true);
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    await onUpgrade();
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="space-y-10 pb-12">
+      <div className="text-center space-y-3 pt-4">
+        <h2 className="font-serif text-4xl tracking-tight">Veda Trusted Data</h2>
+        <p className="text-[var(--text2)] max-w-md mx-auto leading-relaxed">
+          Veda Premium gives you absolute control over your health records. 
+          Monitor access logs, manage permissioned family sync, and export your data securely anytime.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Data Access Logs */}
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 space-y-6 shadow-xl shadow-black/5">
+            <div className="flex items-center justify-between">
+                <h3 className="font-serif text-xl flex items-center gap-2"><Lock size={18} className="text-teal-500" /> Access Audit Logs</h3>
+                <span className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)] bg-[var(--card2)] px-2 py-0.5 rounded-full">Secure</span>
+            </div>
+            
+            <div className="space-y-3">
+                {profile.accessLogs && profile.accessLogs.length > 0 ? profile.accessLogs.map(log => (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} key={log.id} className="flex justify-between items-center p-4 bg-[var(--card2)] rounded-2xl hover:bg-[var(--card)] transition-colors">
+                        <div className="space-y-0.5">
+                            <div className="text-xs font-bold text-[var(--text)] uppercase tracking-tight">{log.resource}</div>
+                            <div className="text-[10px] text-[var(--muted)] font-medium capitalize">{log.action}</div>
+                        </div>
+                        <div className="text-[10px] font-mono text-[var(--muted)]">{new Date(log.timestamp).toLocaleDateString()}</div>
+                    </motion.div>
+                )) : <p className="text-sm text-[var(--muted)] italic p-4">No recent activity detected.</p>}
+            </div>
+            <button className="w-full py-4 bg-[var(--teal)]/10 text-[var(--teal)] hover:bg-[var(--teal)] hover:text-[#020f0c] font-black rounded-2xl text-xs uppercase tracking-widest transition-all">Export Report</button>
+        </div>
+
+        {/* Family Sync */}
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 space-y-6 shadow-xl shadow-black/5">
+            <div className="flex items-center justify-between">
+                <h3 className="font-serif text-xl flex items-center gap-2"><Users size={18} className="text-amber-500" /> Family Health Sync</h3>
+                <span className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)] bg-[var(--card2)] px-2 py-0.5 rounded-full">Permissioned</span>
+            </div>
+            
+            <div className="space-y-3">
+                {profile.familyPermissions && profile.familyPermissions.length > 0 ? profile.familyPermissions.map(perm => (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} key={perm.memberId} className="flex justify-between items-center p-4 bg-[var(--card2)] rounded-2xl group hover:border-[var(--teal)] border border-transparent transition-all">
+                        <div className="font-bold text-sm">{perm.name}</div>
+                        <div className="flex gap-2">
+                            {perm.canViewAlerts && <span className="bg-amber-500/10 text-amber-500 text-[9px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full">Alerts</span>}
+                            {perm.canViewMedications && <span className="bg-teal-500/10 text-teal-500 text-[9px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full">Meds</span>}
+                        </div>
+                    </motion.div>
+                )) : <p className="text-sm text-[var(--muted)] italic p-4">Add a family member to sync alerts.</p>}
+            </div>
+            <button className="w-full py-4 bg-[var(--card2)] border border-[var(--border)] hover:border-[var(--teal)] rounded-2xl text-xs uppercase tracking-widest font-black text-[var(--muted)] hover:text-white transition-all">Manage Connections</button>
+        </div>
+      </div>
+    </div>
   );
 }
