@@ -56,21 +56,28 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'email']) &&
              data.uid == request.auth.uid &&
              data.email is string && data.email.size() <= 200 &&
-             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
-             (!('age' in data) || (data.age is string && data.age.size() <= 10)) &&
-             (!('sex' in data) || (data.sex is string && data.sex.size() <= 20)) &&
-             (!('city' in data) || (data.city is string && data.city.size() <= 100)) &&
-             (!('height' in data) || (data.height is string && data.height.size() <= 10)) &&
-             (!('weight' in data) || (data.weight is string && data.weight.size() <= 10)) &&
-             (!('bp' in data) || (data.bp is string && data.bp.size() <= 20)) &&
-             (!('sugar' in data) || (data.sugar is string && data.sugar.size() <= 20)) &&
-             (!('blood' in data) || (data.blood is string && data.blood.size() <= 10)) &&
-             (!('conditions' in data) || (data.conditions is list && data.conditions.size() <= 50)) &&
-             (!('medicines' in data) || (data.medicines is list && data.medicines.size() <= 50)) &&
-             (!('familyHistory' in data) || (data.familyHistory is list && data.familyHistory.size() <= 50)) &&
-             (!('allergies' in data) || (data.allergies is list && data.allergies.size() <= 50)) &&
-             (!('vaccinationHistory' in data) || (data.vaccinationHistory is list && data.vaccinationHistory.size() <= 50)) &&
-             (!('setupDone' in data) || data.setupDone is bool);
+             (!('name' in data) || (data.name is string && data.name.size() <= 200)) &&
+             (!('age' in data) || (data.age is string && data.age.size() <= 20)) &&
+             (!('sex' in data) || (data.sex is string && data.sex.size() <= 50)) &&
+             (!('city' in data) || (data.city is string && data.city.size() <= 200)) &&
+             (!('height' in data) || (data.height is string && data.height.size() <= 20)) &&
+             (!('weight' in data) || (data.weight is string && data.weight.size() <= 20)) &&
+             (!('bp' in data) || (data.bp is string && data.bp.size() <= 50)) &&
+             (!('sugar' in data) || (data.sugar is string && data.sugar.size() <= 50)) &&
+             (!('blood' in data) || (data.blood is string && data.blood.size() <= 20)) &&
+             (!('conditions' in data) || (data.conditions is list && data.conditions.size() <= 100)) &&
+             (!('medicines' in data) || (data.medicines is list && data.medicines.size() <= 100)) &&
+             (!('familyHistory' in data) || (data.familyHistory is list && data.familyHistory.size() <= 100)) &&
+             (!('allergies' in data) || (data.allergies is list && data.allergies.size() <= 100)) &&
+             (!('vaccinationHistory' in data) || (data.vaccinationHistory is list && data.vaccinationHistory.size() <= 100)) &&
+             (!('emergencyContactName' in data) || (data.emergencyContactName is string && data.emergencyContactName.size() <= 200)) &&
+             (!('emergencyContactPhone' in data) || (data.emergencyContactPhone is string && data.emergencyContactPhone.size() <= 50)) &&
+             (!('emergencyContactRelation' in data) || (data.emergencyContactRelation is string && data.emergencyContactRelation.size() <= 100)) &&
+             (!('company' in data) || (data.company is string && data.company.size() <= 200)) &&
+             (!('corporateId' in data) || (data.corporateId is string && data.corporateId.size() <= 100)) &&
+             (!('setupDone' in data) || data.setupDone is bool) &&
+             (!('notificationsEnabled' in data) || data.notificationsEnabled is bool) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 100));
     }
 
     function isValidJournal(data) {
@@ -139,8 +146,10 @@ service cloud.firestore {
         isValidUser(incoming()) && (
           // Action: Profile Update
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'age', 'sex', 'city', 'height', 'weight', 'bp', 'sugar', 'blood',
-            'conditions', 'medicines', 'familyHistory', 'allergies', 'vaccinationHistory', 'setupDone'
+            'uid', 'email', 'name', 'age', 'sex', 'city', 'height', 'weight', 'bp', 'sugar', 'blood',
+            'conditions', 'medicines', 'familyHistory', 'allergies', 'vaccinationHistory', 'setupDone',
+            'emergencyContactName', 'emergencyContactPhone', 'emergencyContactRelation', 'company', 'corporateId',
+            'notificationsEnabled', 'updatedAt'
           ])
         )
       );
