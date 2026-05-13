@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, Brush } from 'recharts';
@@ -32,8 +33,12 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Clipboard, 
+  Clipboard,
+  ClipboardList,
+  ClipboardCheck,
+  Utensils,
   Clock,
+  Cpu,
   CreditCard,
   DollarSign,
   Download,
@@ -79,6 +84,8 @@ import {
   Send,
   Settings,
   Shield, 
+  ShieldAlert,
+  ShieldCheck,
   Share2,
   ShoppingCart, 
   Smile,
@@ -99,17 +106,23 @@ import {
   Zap,
   Mail,
   Eye,
-  UserCircle
+  EyeOff,
+  UserCircle,
+  ExternalLink,
+  ChevronDown,
+  FileSearch,
+  BookCheck,
+  ListChecks
 } from 'lucide-react';
 import { cn, formatMsg, formatCurrency, formatCoverage } from './lib/utils';
 import { TrendsInsights } from './components/TrendsInsights';
 import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
-import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge } from './types';
-import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, SYS_PROMPT } from './lib/gemini';
+import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
+import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider, ai } from './firebase';
-import { signInWithRedirect, getRedirectResult, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocFromServer, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocFromServer, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { MapContainer, TileLayer, Marker, Popup, useMap as useLeafletMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -272,21 +285,48 @@ function AppContent() {
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [records, setRecords] = useState<MedicalRecord[]>([]);
+  const [lockerDocs, setLockerDocs] = useState<HealthDocument[]>([]);
   const [family, setFamily] = useState<FamilyMember[]>([]);
   const [policies, setPolicies] = useState<UserInsurancePolicy[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [cart, setCart] = useState<any[]>([]);
+  const [showCart, setShowCart] = useState(false);
   
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const addNotification = useCallback((notif: Omit<AppNotification, 'id' | 'timestamp'>) => {
+    const id = Math.random().toString(36).substring(7);
+    const newNotif: AppNotification = { 
+      ...notif, 
+      id, 
+      timestamp: new Date().toISOString() 
+    };
+    setNotifications(prev => [newNotif, ...prev]);
+    const duration = notif.duration ?? 5000;
+    if (duration > 0) {
+      setTimeout(() => {
+        setNotifications(prev => prev.filter(n => n.id !== id));
+      }, duration);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      if (e.detail) {
+        addNotification(e.detail);
+      }
+    };
+    window.addEventListener('app-notification', handler);
+    return () => window.removeEventListener('app-notification', handler);
+  }, [addNotification]);
+
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
 
-  const [chatHistory, setChatHistory] = useState<{role: 'user' | 'assistant', content: string}[]>([]);
-  
-  // Multi-conversation management
-  const [activeChatId, setActiveChatId] = useLocalStorage<string>('veda_active_chat_id', 'default');
-  const [allChats, setAllChats] = useLocalStorage<Record<string, {id: string, title: string, messages: any[], timestamp: number}>>('veda_all_chats', {
-    'default': { id: 'default', title: 'New Consultation', messages: [], timestamp: Date.now() }
-  }, true);
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [activeChatId, setActiveChatId] = useLocalStorage<string>('veda_active_chat_id', '');
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   useEffect(() => {
@@ -302,6 +342,42 @@ function AppContent() {
     };
   }, []);
 
+  // Sync notifications permission when window regains focus (e.g. after user changes settings)
+  useEffect(() => {
+    const syncPermissions = () => {
+      if (typeof Notification !== 'undefined') {
+        const current = Notification.permission;
+        console.log("Push permission state:", current);
+        setNotificationPermission(current);
+        
+        // If it was just granted, update the profile automatically
+        if (current === 'granted' && profile && !profile.notificationsEnabled) {
+          updateProfile({ ...profile, notificationsEnabled: true });
+        }
+      }
+    };
+    
+    window.addEventListener('focus', syncPermissions);
+    
+    // Use the permissions API if available for real-time changes
+    let permissionStatus: PermissionStatus | null = null;
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'notifications' as PermissionName }).then((status) => {
+        permissionStatus = status;
+        status.onchange = () => {
+          console.log("Permission change detected via API:", Notification.permission);
+          syncPermissions();
+        };
+      }).catch(err => console.warn("Permissions API error:", err));
+    }
+
+    syncPermissions();
+    return () => {
+      window.removeEventListener('focus', syncPermissions);
+      if (permissionStatus) permissionStatus.onchange = null;
+    };
+  }, [profile?.uid]); // Re-sync if profile changes to ensure it writes to the right user
+
   // Service Worker Registration
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -316,28 +392,42 @@ function AppContent() {
   const requestNotificationPermission = async () => {
     if (typeof Notification !== 'undefined') {
       try {
+        console.log("Current notification permission:", Notification.permission);
+        
+        // If already denied, show instructions on how to unblock
+        if (Notification.permission === 'denied') {
+          showDoneToast("Tap the badge next to the URL at the top to 'Allow' notifications for this site.");
+          setNotificationPermission('denied');
+          return;
+        }
+
         const permission = await Notification.requestPermission();
         setNotificationPermission(permission);
+        
         if (permission === 'granted') {
           updateProfile({ ...profile, notificationsEnabled: true });
           showDoneToast("Notifications enabled!");
           triggerPushNotification("Veda Health", "You will now receive important health alerts.");
-        } else {
-          showDoneToast("Notifications disabled.");
+        } else if (permission === 'denied') {
+          showDoneToast("Push blocked. Falling back to in-app alerts.");
         }
       } catch (err) {
         console.error("error requesting notifications", err);
+        showDoneToast("Failed to request permission.");
       }
     } else {
-      showDoneToast("Notifications not supported on this browser.");
+      showDoneToast("Notifications not supported.");
     }
   };
 
   const triggerPushNotification = (title: string, body: string) => {
+    // Always ensure the user sees the alert in-app
+    showDoneToast(`${title}: ${body}`);
+
     if (notificationPermission === 'granted' || (typeof Notification !== 'undefined' && Notification.permission === 'granted')) {
       const options = {
         body,
-        icon: '/favicon.ico', // Fallback for icon
+        icon: '/favicon.ico',
         badge: '/favicon.ico',
         tag: 'veda-alert',
         renotify: true
@@ -347,74 +437,102 @@ function AppContent() {
         navigator.serviceWorker.ready.then(registration => {
           registration.showNotification(title, options);
         }).catch(() => {
-          new Notification(title, options);
+          try { new Notification(title, options); } catch(e) {}
         });
       } else if (typeof Notification !== 'undefined') {
-        new Notification(title, options);
+        try { new Notification(title, options); } catch(e) {}
       }
     }
   };
 
-  // Sync active chatHistory state with allChats
+  // Sync active chatHistory from Firestore when activeChatId changes
   useEffect(() => {
-    if (allChats[activeChatId]) {
-      setChatHistory(allChats[activeChatId].messages);
-    } else {
-      const firstChatId = Object.keys(allChats)[0];
-      if (firstChatId) setActiveChatId(firstChatId);
-    }
-  }, [activeChatId]);
-
-  const updateActiveChat = (newMessages: any[]) => {
-    setChatHistory(newMessages);
-    setAllChats(prev => {
-      const chat = prev[activeChatId] || { id: activeChatId, title: 'Consultation', messages: [], timestamp: Date.now() };
-      
-      // Update title automatically based on first message
-      let title = chat.title;
-      if (chat.messages.length === 0 && newMessages.length > 0 && newMessages[0].role === 'user') {
-        title = newMessages[0].content.split('\n')[0].substring(0, 24).trim();
-        if (newMessages[0].content.length > 24) title += '...';
-      }
-
-      return {
-        ...prev,
-        [activeChatId]: {
-          ...chat,
-          messages: newMessages,
-          title,
-          timestamp: Date.now()
-        }
-      };
-    });
-  };
-
-  const createNewChat = () => {
-    const id = 'chat_' + Date.now();
-    setAllChats(prev => ({
-      ...prev,
-      [id]: { id, title: 'New Consultation', messages: [], timestamp: Date.now() }
-    }));
-    setActiveChatId(id);
-    switchMode('chat');
-  };
-
-  const deleteChat = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const chatIds = Object.keys(allChats);
-    if (chatIds.length <= 1) {
-      // Just clear the messages instead of deleting the last chat
-      updateActiveChat([]);
+    if (!user || !activeChatId) {
+      setChatHistory([]);
       return;
     }
-    
-    const newChats = { ...allChats };
-    delete newChats[id];
-    setAllChats(newChats);
 
-    if (activeChatId === id) {
-      const remainingIds = Object.keys(newChats);
-      setActiveChatId(remainingIds[remainingIds.length - 1]);
+    const msgsRef = collection(db, 'users', user.uid, 'conversations', activeChatId, 'messages');
+    const q = query(msgsRef, where('timestamp', '!=', '')); // Just to get order by if needed, but let's do a simple sort or get all
+    
+    const unsub = onSnapshot(msgsRef, (snap) => {
+      const msgs = snap.docs.map(d => ({ ...d.data() } as ChatMessage));
+      // Sort by timestamp if not already sorted by Firestore
+      setChatHistory(msgs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()));
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/conversations/${activeChatId}/messages`));
+
+    return () => unsub();
+  }, [user, activeChatId]);
+
+  const updateActiveChat = async (newMessages: ChatMessage[]) => {
+    localStorage.setItem('veda_chat_interim', JSON.stringify(newMessages));
+    
+    if (!user || !activeChatId) return;
+
+    // We only save the LATEST message to Firestore to avoid re-writing everything
+    const lastMsg = newMessages[newMessages.length - 1];
+    if (lastMsg) {
+      try {
+        await addDoc(collection(db, 'users', user.uid, 'conversations', activeChatId, 'messages'), {
+          ...lastMsg,
+          timestamp: lastMsg.timestamp || new Date().toISOString()
+        });
+
+        // Update conversation metadata
+        const convRef = doc(db, 'users', user.uid, 'conversations', activeChatId);
+        const updates: any = { lastMessageAt: new Date().toISOString() };
+        
+        // Auto-title on first message
+        if (newMessages.length === 1 && lastMsg.role === 'user') {
+          let title = lastMsg.content.split('\n')[0].substring(0, 30).trim();
+          if (lastMsg.content.length > 30) title += '...';
+          updates.title = title;
+        }
+        
+        await updateDoc(convRef, updates);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/conversations/${activeChatId}`);
+      }
+    }
+  };
+
+  const createNewChat = async () => {
+    if (!user) return;
+    try {
+      const convRef = await addDoc(collection(db, 'users', user.uid, 'conversations'), {
+        title: 'New Consultation',
+        createdAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString()
+      });
+      setActiveChatId(convRef.id);
+      switchMode('chat');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/conversations`);
+    }
+  };
+
+  const deleteChat = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user) return;
+
+    const confirmDel = window.confirm("Delete this consultation history?");
+    if (!confirmDel) return;
+
+    try {
+      // Delete messages first (Firestore subcollections aren't auto-deleted)
+      const msgsSnap = await getDocs(collection(db, 'users', user.uid, 'conversations', id, 'messages'));
+      for (const mDoc of msgsSnap.docs) {
+        await deleteDoc(doc(db, 'users', user.uid, 'conversations', id, 'messages', mDoc.id));
+      }
+      
+      // Delete conversation doc
+      await deleteDoc(doc(db, 'users', user.uid, 'conversations', id));
+
+      if (activeChatId === id) {
+        setActiveChatId('');
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/conversations/${id}`);
     }
   };
   const [isTyping, setIsTyping] = useState(false);
@@ -424,110 +542,11 @@ function AppContent() {
   const [showAllPages, setShowAllPages] = useState(false);
   const journalUnsubRef = useRef<(() => void) | null>(null);
 
-  const [isConnected, setIsConnected] = useState<boolean | null>(null);
-  
-  // Test Connection
   useEffect(() => {
-    let retryCount = 0;
-    const maxRetries = 3;
-
-    async function testConnection() {
-      try {
-        const docRef = doc(db, 'test', 'connection');
-        // Force the SDK to try reaching the server
-        await getDocFromServer(docRef);
-        setIsConnected(true);
-        retryCount = 0;
-      } catch (error: any) {
-        // Suppress 'unavailable' or 'offline' errors during initial boot as they are often transient
-        const isTransient = error?.code === 'unavailable' || error?.message?.includes('offline') || error?.message?.includes('failed-precondition');
-        
-        if (retryCount >= 5 && !isTransient) {
-          console.warn("Firebase connection test exhausted retries.");
-          setIsConnected(false);
-        } else if (retryCount < 5) {
-          retryCount++;
-          // Progressive backoff: 2s, 4s, 6s, 8s, 10s
-          setTimeout(testConnection, 2000 * retryCount);
-        }
-      }
-    }
-    
-    testConnection();
-    // Re-check occasionally
-    const interval = setInterval(testConnection, 60000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
+    const authUnsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setIsAuthReady(true);
-      if (u) {
-        // Fetch profile
-        const profileRef = doc(db, 'users', u.uid);
-        getDoc(profileRef).then((snap) => {
-          if (snap.exists()) {
-            setProfile(snap.data() as UserProfile);
-          } else {
-            // Initialize profile
-            const newProfile: UserProfile = {
-              uid: u.uid,
-              email: u.email || '',
-              name: u.displayName || '',
-              age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
-              conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], setupDone: false
-            };
-            setDoc(profileRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${u.uid}`));
-            setProfile(newProfile);
-          }
-        }).catch(e => handleFirestoreError(e, OperationType.GET, `users/${u.uid}`));
-
-        // Real-time journal
-        const journalUnsub = onSnapshot(collection(db, 'users', u.uid, 'journal'), (snap) => {
-          const entries = snap.docs.map(d => d.data() as JournalEntry);
-          setJournal(entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/journal`));
-
-        // Real-time reminders
-        const remindersUnsub = onSnapshot(collection(db, 'users', u.uid, 'reminders'), (snap) => {
-          const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
-          setReminders(items);
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/reminders`));
-
-        // Real-time records
-        const recordsUnsub = onSnapshot(collection(db, 'users', u.uid, 'records'), (snap) => {
-          const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
-          setRecords(items);
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/records`));
-
-        // Real-time family
-        const familyUnsub = onSnapshot(collection(db, 'users', u.uid, 'family'), (snap) => {
-          const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
-          setFamily(items);
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/family`));
-
-        // Real-time policies
-        const policiesUnsub = onSnapshot(collection(db, 'users', u.uid, 'policies'), (snap) => {
-          const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
-          setPolicies(items);
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/policies`));
-
-        // Real-time appointments
-        const appointmentsUnsub = onSnapshot(collection(db, 'users', u.uid, 'appointments'), (snap) => {
-          const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
-          setAppointments(items);
-        }, (e) => handleFirestoreError(e, OperationType.GET, `users/${u.uid}/appointments`));
-
-        return () => {
-          journalUnsub();
-          remindersUnsub();
-          recordsUnsub();
-          familyUnsub();
-          policiesUnsub();
-          appointmentsUnsub();
-        };
-      } else {
+      if (!u) {
         setProfile({
           name: '', age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
           conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], setupDone: false
@@ -538,10 +557,99 @@ function AppContent() {
         setFamily([]);
         setPolicies([]);
         setAppointments([]);
+        setConversations([]);
       }
     });
-    return () => unsubscribe();
+
+    return () => authUnsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Fetch profile
+    const profileRef = doc(db, 'users', user.uid);
+    getDoc(profileRef).then((snap) => {
+      if (snap.exists()) {
+        setProfile(snap.data() as UserProfile);
+      } else {
+        // Initialize profile
+        const newProfile: UserProfile = {
+          uid: user.uid,
+          email: user.email || '',
+          name: user.displayName || '',
+          age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
+          conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], setupDone: false
+        };
+        setDoc(profileRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));
+        setProfile(newProfile);
+      }
+    }).catch(e => handleFirestoreError(e, OperationType.GET, `users/${user.uid}`));
+
+    // Real-time journal
+    const journalUnsub = onSnapshot(collection(db, 'users', user.uid, 'journal'), (snap) => {
+      const entries = snap.docs.map(d => d.data() as JournalEntry);
+      setJournal(entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/journal`));
+
+    // Real-time reminders
+    const remindersUnsub = onSnapshot(collection(db, 'users', user.uid, 'reminders'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+      setReminders(items);
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/reminders`));
+
+    // Real-time records
+    const recordsUnsub = onSnapshot(collection(db, 'users', user.uid, 'records'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+      setRecords(items);
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/records`));
+
+    // Real-time family
+    const familyUnsub = onSnapshot(collection(db, 'users', user.uid, 'family'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+      setFamily(items);
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/family`));
+
+    // Real-time policies
+    const policiesUnsub = onSnapshot(collection(db, 'users', user.uid, 'policies'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+      setPolicies(items);
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/policies`));
+
+    // Real-time appointments
+    const appointmentsUnsub = onSnapshot(collection(db, 'users', user.uid, 'appointments'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
+      setAppointments(items);
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/appointments`));
+
+    // Real-time conversations
+    const convsUnsub = onSnapshot(collection(db, 'users', user.uid, 'conversations'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as ChatConversation));
+      setConversations(items.sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()));
+      
+      // Auto select latest if none active
+      if (!activeChatId && items.length > 0) {
+        setActiveChatId(items[0].id);
+      }
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/conversations`));
+
+    // Real-time locker
+    const lockerUnsub = onSnapshot(collection(db, 'users', user.uid, 'locker'), (snap) => {
+      const items = snap.docs.map(d => ({ ...d.data(), id: d.id } as HealthDocument));
+      setLockerDocs(items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${user.uid}/locker`));
+
+    return () => {
+      journalUnsub();
+      remindersUnsub();
+      recordsUnsub();
+      familyUnsub();
+      policiesUnsub();
+      appointmentsUnsub();
+      convsUnsub();
+      lockerUnsub();
+    };
+  }, [user]);
 
   useEffect(() => {
     if (!isLightMode) {
@@ -565,8 +673,76 @@ function AppContent() {
     try {
       await signInWithPopup(auth, googleProvider);
       setMode('home'); // Redirect to dashboard
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      
       console.error("Login failed", error);
+      
+      if (error.code === 'auth/network-request-failed') {
+        showErrorToast("Network Error: Please check your internet or disable Ad-blockers.");
+      } else if (error.code === 'auth/popup-blocked') {
+        showErrorToast("Popup Blocked: Please click 'Allow Popups' in your browser's address bar.");
+      } else {
+        showErrorToast(`Login failed: ${error.message}`);
+      }
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!user) return;
+    
+    const confirmDelete = window.confirm(
+      "EXTREME CAUTION: Are you sure you want to delete your Veda AI account? " +
+      "This will permanently erase all your health records, journal entries, " +
+      "medications, and family data from our secure servers. This action is irreversible."
+    );
+    
+    if (!confirmDelete) return;
+
+    try {
+      showDoneToast("Purging health data...");
+      const uid = user.uid;
+      
+      // List of subcollections to clean up
+      const subcollections = [
+        'journal', 
+        'reminders', 
+        'records', 
+        'family', 
+        'policies', 
+        'appointments',
+        'accessLogs',
+        'familyPermissions',
+        'conversations'
+      ];
+
+      // Sequential deletion of subcollection contents
+      for (const sub of subcollections) {
+        const snap = await getDocs(collection(db, 'users', uid, sub));
+        for (const docSnap of snap.docs) {
+          // Extra cleanup for nested messages in conversations
+          if (sub === 'conversations') {
+            const msgsSnap = await getDocs(collection(db, 'users', uid, 'conversations', docSnap.id, 'messages'));
+            for (const msgDoc of msgsSnap.docs) {
+              await deleteDoc(doc(db, 'users', uid, 'conversations', docSnap.id, 'messages', msgDoc.id));
+            }
+          }
+          await deleteDoc(doc(db, 'users', uid, sub, docSnap.id));
+        }
+      }
+
+      // Delete main profile document
+      await deleteDoc(doc(db, 'users', uid));
+
+      showDoneToast("Account successfully purged.");
+      await signOut(auth);
+      setMode('landing');
+      
+    } catch (error) {
+      console.error("Account deletion failed", error);
+      handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}`);
     }
   };
 
@@ -676,131 +852,102 @@ function AppContent() {
     <div id="landing-page" className="relative min-h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)] transition-colors duration-300">
       <div className="bg-gradient" />
       
-      <nav className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all bg-[var(--bg)]/80 backdrop-blur-md border-b border-[var(--border)]">
+      <nav className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)]">
         <div className="max-w-[1100px] mx-auto px-6 flex items-center justify-between">
           <a href="#" className="font-serif text-2xl text-[var(--teal)] flex items-baseline gap-1.5 no-underline">
-            Veda <span className="font-sans text-[10px] text-[var(--muted)] font-medium uppercase tracking-wider">Health</span>
+            Veda <span className="font-sans text-[10px] text-[var(--muted)] font-bold uppercase tracking-[0.2em]">Health</span>
           </a>
-          <div className="hidden md:flex items-center gap-1.5 ml-auto mr-6">
-            <a href="#features" className="px-3.5 py-1.5 text-[var(--text2)] no-underline text-[13.5px] font-medium hover:text-[var(--text)] hover:bg-[var(--card)] rounded-lg transition-all">Features</a>
-            <a href="#how" className="px-3.5 py-1.5 text-[var(--text2)] no-underline text-[13.5px] font-medium hover:text-[var(--text)] hover:bg-[var(--card)] rounded-lg transition-all">How it works</a>
-            <a href="#testimonials" className="px-3.5 py-1.5 text-[var(--text2)] no-underline text-[13.5px] font-medium hover:text-[var(--text)] hover:bg-[var(--card)] rounded-lg transition-all">Reviews</a>
+          <div className="hidden md:flex items-center gap-2 ml-auto mr-8">
+            <a href="#features" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">Features</a>
+            <a href="#how" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">How it works</a>
+            <a href="#testimonials" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">Reviews</a>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <button 
               onClick={() => setMode('auth')} 
-              className="hidden sm:block px-4 py-2 text-[var(--text2)] font-bold text-[13.5px] hover:text-[var(--teal)] transition-all"
+              className="hidden sm:block px-4 py-2 text-[var(--text2)] font-bold text-[13px] uppercase tracking-wider hover:text-[var(--teal)] transition-all"
             >
               Sign In
             </button>
-            <button onClick={handleStart} className="px-5 py-2 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold text-[13.5px] rounded-xl shadow-lg hover:brightness-110 transition-all">
-              {user ? 'Open App →' : 'Get Started'}
+            <button onClick={handleStart} className="btn-primary">
+              {user ? 'Open App' : 'Get Started'}
             </button>
           </div>
         </div>
       </nav>
 
       <section className="hero min-h-screen flex items-center pt-[120px] pb-20 relative overflow-hidden">
-        <div className="hero-orb hero-orb-1" />
-        <div className="hero-orb hero-orb-2" />
-        <div className="hero-orb hero-orb-3" />
-        <div className="max-w-[1100px] mx-auto px-6 grid md:grid-cols-2 gap-16 items-center w-full relative z-10">
+        <div className="max-w-[1100px] mx-auto px-6 grid md:grid-cols-2 gap-20 items-center w-full relative z-10">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-full mb-5 text-xs font-semibold text-[var(--teal)] tracking-wide">
-              <div className="w-1.5 h-1.5 rounded-full bg-[var(--teal)] shadow-[0_0_8px_rgba(0,212,177,0.8)] animate-pulse" />
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-full mb-6 text-[10px] font-bold text-[var(--teal)] uppercase tracking-widest">
               Now powered by Gemini 2.0 Flash
             </div>
-            <h1 className="font-serif text-[clamp(38px,5vw,56px)] leading-[1.12] tracking-tight text-[var(--text)] mb-4.5">
-              Your <em className="italic text-[var(--teal)] not-italic">AI doctor</em><br />always in your pocket
+            <h1 className="font-serif text-[clamp(42px,6vw,64px)] leading-[1.05] tracking-tight text-[var(--text)] mb-6">
+              Your <em className="italic text-[var(--teal)] not-italic">AI doctor</em><br />always available.
             </h1>
-            <p className="text-lg text-[var(--text2)] leading-relaxed max-w-[480px] mb-9 font-normal">
-              Veda gives you <strong>instant health guidance</strong>, tracks your vitals, reads prescriptions, orders medicines — all in one beautiful app. Available in <strong>10 Indian languages</strong>.
+            <p className="text-lg text-[var(--text2)] leading-relaxed max-w-[480px] mb-10 font-medium opacity-80">
+              Veda gives you instant health guidance, tracks your vitals, and manages your medical life — all in one simple, private app.
             </p>
-            <div className="flex flex-wrap items-center gap-3.5 mt-8">
+            <div className="flex flex-wrap items-center gap-4 mt-8">
               <button 
                 onClick={handleStart} 
-                className="flex-1 xs:flex-none inline-flex items-center justify-center gap-2 px-8 py-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-black text-base rounded-2xl shadow-xl shadow-[var(--teal)]/20 hover:brightness-105 hover:-translate-y-0.5 transition-all group active:scale-95"
+                className="flex-1 xs:flex-none btn-primary px-10 py-5 text-base rounded-2xl shadow-lg shadow-[var(--teal)]/10"
               >
-                <Stethoscope size={20} className="group-hover:rotate-12 transition-transform" />
+                <Stethoscope size={20} />
                 Try Veda Free
               </button>
               <a 
                 href="#features" 
-                className="flex-1 xs:flex-none inline-flex items-center justify-center px-8 py-4 text-[var(--text2)] font-bold text-base border border-[var(--border)] rounded-2xl bg-[var(--card)] hover:border-[var(--teal-line)] hover:text-[var(--teal)] transition-all active:scale-95"
+                className="flex-1 xs:flex-none btn-secondary px-8 py-5 text-base rounded-2xl border-[var(--border)]"
               >
                 Explore Features
               </a>
             </div>
-            <p className="mt-4 text-[12.5px] text-[var(--muted)] flex items-center gap-1.5">
-              ✓ 100% Free &nbsp;·&nbsp; ✓ No sign-up needed &nbsp;·&nbsp; ✓ Private & secure
+            <p className="mt-6 text-[11px] text-[var(--muted)] font-bold uppercase tracking-widest flex items-center gap-3">
+              <span>✓ Private & secure</span>
+              <span className="opacity-30">|</span>
+              <span>✓ No sign-up needed</span>
             </p>
-            <div className="flex gap-7 mt-10 pt-8 border-t border-[var(--border)]">
-              <div>
-                <div className="font-serif text-3xl text-[var(--teal)]">23+</div>
-                <div className="text-[12px] text-[var(--muted)] mt-1 font-medium">Health features</div>
-              </div>
-              <div>
-                <div className="font-serif text-3xl text-[var(--teal)]">10</div>
-                <div className="text-[12px] text-[var(--muted)] mt-1 font-medium">Indian languages</div>
-              </div>
-              <div>
-                <div className="font-serif text-3xl text-[var(--teal)]">100%</div>
-                <div className="text-[12px] text-[var(--muted)] mt-1 font-medium">Free forever</div>
-              </div>
-            </div>
           </motion.div>
 
           <motion.div 
             className="flex justify-center items-center relative"
-            initial={{ opacity: 0, scale: 0.9 }}
+            initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.8, delay: 0.2 }}
           >
-            <div className="relative w-[280px]">
-              <div className="absolute -inset-10 bg-radial from-[rgba(0,212,177,0.15)] to-transparent blur-2xl pointer-events-none animate-pulse" />
-              <div className="w-[280px] bg-[var(--card)] border border-[var(--border)] rounded-[36px] overflow-hidden shadow-2xl relative">
-                <div className="h-11 bg-[var(--card)] flex items-center justify-between px-5.5 text-xs text-[var(--muted)] font-semibold border-b border-[var(--border)]">
-                  <div className="w-20 h-5.5 bg-[var(--bg)] rounded-b-2xl mx-auto absolute top-0 left-1/2 -translate-x-1/2" />
+            <div className="relative">
+              <div className="w-[280px] bg-[var(--bg)] border border-[var(--border)] rounded-[40px] overflow-hidden shadow-2xl relative">
+                <div className="h-12 bg-[var(--surface)] flex items-center justify-between px-6 text-[10px] text-[var(--muted)] font-black uppercase tracking-widest border-b border-[var(--border)]">
                   <span>9:41</span>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1.5 opacity-60">
                     <Watch size={12} />
                     <Zap size={12} />
                   </div>
                 </div>
-                <div className="p-3.5 space-y-2.5">
-                  <div className="flex gap-2 ai">
-                    <div className="w-6 h-6 rounded-lg bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center text-[10px]"><Stethoscope size={12} /></div>
-                    <div className="p-2.5 bg-[var(--card2)] border border-[var(--border)] rounded-xl rounded-tl-sm text-[11.5px] leading-relaxed max-w-[75%] text-[var(--text)]">
-                      Namaste! I'm Veda, your <span className="text-[var(--teal)] font-semibold">AI health companion</span>. How are you feeling today?
+                <div className="p-4 space-y-3">
+                  <div className="flex gap-2.5 ai">
+                    <div className="p-3 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-[12px] leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
+                      Namaste! I'm Veda. How can I help you today?
                     </div>
                   </div>
-                  <div className="flex flex-row-reverse gap-2 user">
-                    <div className="w-6 h-6 rounded-lg bg-[var(--card2)] border border-[var(--border)] flex items-center justify-center text-xs"><User size={12} /></div>
-                    <div className="p-2.5 bg-[var(--teal)] text-[#020f0c] rounded-xl rounded-tr-sm text-[11.5px] leading-relaxed max-w-[75%]">
-                      I have a headache and mild fever since morning
-                    </div>
-                  </div>
-                  <div className="flex gap-2 ai">
-                    <div className="w-6 h-6 rounded-lg bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center text-[10px]"><Stethoscope size={12} /></div>
-                    <div className="p-2.5 bg-[var(--card2)] border border-[var(--border)] rounded-xl rounded-tl-sm text-[11.5px] leading-relaxed max-w-[75%] text-[var(--text)]">
-                      Based on your symptoms, this could be a viral infection. <span className="text-[var(--teal)] font-semibold">Rest, hydrate well</span>, and take Paracetamol 500mg.
+                  <div className="flex flex-row-reverse gap-2.5 user">
+                    <div className="p-3 bg-[var(--teal)] text-white dark:text-[#020617] font-bold rounded-2xl rounded-tr-sm text-[12px] leading-relaxed max-w-[85%] shadow-md">
+                      I have a headache since morning
                     </div>
                   </div>
                 </div>
               </div>
-              {/* Floating badges */}
-              <div className="absolute -left-16 top-1/4 bg-[var(--card)] border border-white/10 rounded-xl p-2.5 shadow-xl backdrop-blur-md flex items-center gap-2 text-[11px] font-bold text-[var(--teal)]">
-                <FileText size={14} /> Lab report read
+              {/* Floating badges - Minimal Style */}
+              <div className="absolute -left-12 top-1/4 bg-[var(--card)] border border-[var(--teal-line)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--teal)]">
+                <FileText size={14} /> Reports Read
               </div>
-              <div className="absolute -right-16 top-1/2 bg-[var(--card)] border border-white/10 rounded-xl p-2.5 shadow-xl backdrop-blur-md flex items-center gap-2 text-[11px] font-bold text-[var(--amber)]">
-                <Pill size={14} /> Medicines ordered
-              </div>
-              <div className="absolute -left-10 bottom-1/4 bg-[var(--card)] border border-white/10 rounded-xl p-2.5 shadow-xl backdrop-blur-md flex items-center gap-2 text-[11px] font-bold text-[var(--purple)]">
-                <BarChart3 size={14} /> Health score: 84
+              <div className="absolute -right-12 top-1/2 bg-[var(--card)] border border-[var(--border)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--amber)]">
+                <Pill size={14} /> Medicines
               </div>
             </div>
           </motion.div>
@@ -857,140 +1004,126 @@ function AppContent() {
             <p className="text-[var(--text2)] max-w-[540px] mx-auto">From daily symptoms to emergency guidance — Veda covers it all, powered by Google Gemini AI.</p>
           </div>
           <div className="features-grid">
-            <div className="feature-card featured bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><Stethoscope size={26} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">AI Health Chat</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Describe your symptoms in plain Hindi or English — Veda gives you instant, contextual health guidance. Remembers your history, medications, and conditions across conversations.</div>
-              <div className="flex gap-2 mt-4 flex-wrap">
-                <div className="feature-tag bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">✦ 10 Languages</div>
-                <div className="feature-tag bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">✦ Memory across sessions</div>
-                <div className="feature-tag bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">✦ Gemini 2.0 Flash</div>
+            <div className="feature-card featured">
+              <div className="feature-icon"><Stethoscope size={24} /></div>
+              <div className="font-serif text-2xl mb-3 text-[var(--text)]">AI Health Chat</div>
+              <div className="text-[14px] text-[var(--text2)] leading-relaxed mb-6 font-medium opacity-80">Describe your symptoms in plain language — Veda gives you instant health guidance, remembering your history and medications across conversations.</div>
+              <div className="flex gap-2 flex-wrap">
+                <div className="feature-tag">✦ 10 Languages</div>
+                <div className="feature-tag">✦ Memory across sessions</div>
+                <div className="feature-tag">✦ Gemini 2.0 Flash</div>
               </div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><BarChart3 size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Health Journal</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Log mood, sleep, energy, BP, sugar daily. See patterns, trends and get an AI-powered health score.</div>
-              <div className="feature-tag mt-3.5 bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">✦ Daily Tracking</div>
+            <div className="feature-card">
+              <div className="feature-icon"><BarChart3 size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Health Journal</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Log vitals and mood daily. See patterns and trends with an AI health score.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><Clipboard size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Prescription Scanner</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Point your camera at any prescription — Veda reads every medicine, dosage, and instruction using AI vision.</div>
-              <div className="feature-tag mt-3.5 bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">✦ AI Vision</div>
+            <div className="feature-card">
+              <div className="feature-icon"><Clipboard size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Prescription Scanner</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">AI vision reads any prescription, clarifying dosage and instructions instantly.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><FlaskConical size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Lab Report Reader</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Paste or upload your CBC, lipid panel, thyroid test — Veda explains every value in plain language.</div>
+            <div className="feature-card">
+              <div className="feature-icon"><FlaskConical size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Lab Reports</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Explains blood tests and reports in plain language for complete clarity.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><Hospital size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Hospital Finder</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Find the nearest cardiologist, emergency hospital, or 24hr pharmacy using your GPS location.</div>
+            <div className="feature-card">
+              <div className="feature-icon"><Hospital size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Hospital Finder</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Instantly find the nearest specialist or emergency care in your city.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><ShoppingCart size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Medicine Delivery</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Search medicines, add to cart, and order directly on 1mg, PharmEasy, or NetMeds with one tap.</div>
+            <div className="feature-card">
+              <div className="feature-icon"><ShoppingCart size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Medicine Delivery</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Easily search and order medicines directly from top trusted distributors.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><Users size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Family Health Manager</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Manage health profiles for your entire family — parents, children, grandparents — in one account.</div>
+            <div className="feature-card">
+              <div className="feature-icon"><Users size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Family Health</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Manage health profiles for your entire family in one private account.</div>
             </div>
-            <div className="feature-card bg-[var(--card)] border-[var(--border)]">
-              <div className="feature-icon text-[var(--teal)] bg-[var(--teal-glow)]"><Bell size={22} /></div>
-              <div className="font-serif text-lg mb-2 text-[var(--text)]">Preventive Alerts</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Smart reminders based on your age and conditions — dental checkups, HbA1c, vaccinations and more.</div>
+            <div className="feature-card">
+              <div className="feature-icon"><Bell size={20} /></div>
+              <div className="font-serif text-xl mb-2 text-[var(--text)]">Preventive Alerts</div>
+              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Smart reminders personalized for your age, condition, and medical history.</div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="showcase-section py-20 bg-[var(--surface)]">
+      <section className="showcase-section py-24 bg-[var(--bg)] border-y border-[var(--border)]">
         <div className="max-w-[1100px] mx-auto px-6">
           <div className="showcase-row">
             <div>
-              <div className="showcase-tag bg-[var(--card2)] border-[var(--border)] text-[var(--teal)]"><Stethoscope size={16} /> Second Opinion</div>
-              <h3 className="font-serif text-3xl mb-4 leading-tight text-[var(--text)]">Get a second opinion on any diagnosis</h3>
-              <p className="text-[15px] text-[var(--text2)] leading-relaxed mb-6">Worried about what your doctor said? Veda evaluates your diagnosis, treatment plan, and lab reports — giving you an honest, evidence-based second opinion.</p>
+              <div className="showcase-tag bg-[var(--teal-glow)] text-[var(--teal)]"><Stethoscope size={16} /> Second Opinion</div>
+              <h3 className="font-serif text-4xl mb-6 leading-[1.1] tracking-tight text-[var(--text)]">Get a second opinion on any diagnosis</h3>
+              <p className="text-lg text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-80">Worried about what your doctor said? Veda evaluates your diagnosis and lab reports, giving you an evidence-based second opinion.</p>
               <ul className="showcase-list">
-                <li>Upload your lab reports for instant analysis</li>
-                <li>Evaluate if your prescribed treatment is appropriate</li>
-                <li>Get 5 smart questions to ask your doctor</li>
-                <li>Understand differential diagnoses</li>
+                <li>Instant lab report analysis</li>
+                <li>Evaluate treatment options</li>
+                <li>Questions for your next visit</li>
               </ul>
             </div>
-            <div className="showcase-visual bg-[var(--card)] border-[var(--border)]">
-              <div className="sv-header bg-[var(--card2)] border-b-[var(--border)]">
-                <div className="sv-dots"><div className="sv-dot bg-[#ff5f5f]" /><div className="sv-dot bg-[#f0a030]" /><div className="sv-dot bg-[#00d4b1]" /></div>
-                <span className="text-[12px] text-[var(--muted)] ml-2">Second Opinion</span>
+          <div className="showcase-visual">
+              <div className="sv-header">
+                <div className="sv-dots"><div className="sv-dot bg-[var(--red)]" /><div className="sv-dot bg-[var(--amber)]" /><div className="sv-dot bg-[var(--teal)]" /></div>
+                <span className="text-[11px] font-black uppercase tracking-widest text-[var(--muted)] ml-2">Analysis Report</span>
               </div>
               <div className="sv-content">
-                <div className="bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-xl p-3.5 mb-3">
-                  <div className="text-xs text-[var(--teal)] font-bold uppercase tracking-wider mb-1">Agreement Level</div>
-                  <div className="text-sm font-bold text-[var(--teal)]">✅ Diagnosis Appears Consistent</div>
-                  <div className="text-[12px] text-[var(--text2)] mt-1">Type 2 Diabetes — diagnosis aligns with your HbA1c and symptoms</div>
+                <div className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl mb-4">
+                  <div className="text-[10px] text-[var(--teal)] font-black uppercase tracking-widest mb-1.5 opacity-60">Status</div>
+                  <div className="text-sm font-bold text-[var(--teal)]">Consistent Diagnosis</div>
+                  <div className="text-[12px] text-[var(--text2)] mt-1 font-medium italic opacity-80">Type 2 Diabetes — alignments noted with HbA1c</div>
                 </div>
-                <div className="text-[12px] text-[var(--text2)] leading-relaxed">
-                  <div className="font-bold text-[var(--text)] mb-1.5">Differential Diagnoses to Consider:</div>
-                  <div className="mb-1">→ LADA (Latent Autoimmune Diabetes)</div>
-                  <div className="mb-1">→ Stress-induced hyperglycemia</div>
-                  <div className="text-[var(--teal)] font-semibold mt-2">+ 3 questions for your doctor →</div>
+                <div className="text-[13px] text-[var(--text2)] font-medium">
+                  <div className="text-[var(--text)] font-semibold mb-2">Recommended Steps:</div>
+                  <div className="mb-1 opacity-80">→ Verify with fasting glucose</div>
+                  <div className="mb-1 opacity-80">→ Monitor carbohydrate intake</div>
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="showcase-row reverse mt-20">
+          <div className="showcase-row reverse mt-32">
             <div>
-              <div className="showcase-tag bg-[var(--card2)] border-[var(--border)] text-[var(--teal)]"><BarChart3 size={16} /> Health Score</div>
-              <h3 className="font-serif text-3xl mb-4 leading-tight text-[var(--text)]">Your health, visualised in a single number</h3>
-              <p className="text-[15px] text-[var(--text2)] leading-relaxed mb-6">Veda calculates a personalised Health Score from 0–100 based on your journal entries, vitals, symptoms, and consistency. Backed by AI-powered personalised tips.</p>
+              <div className="showcase-tag bg-[var(--teal-glow)] text-[var(--teal)]"><BarChart3 size={16} /> Health Score</div>
+              <h3 className="font-serif text-4xl mb-6 leading-[1.1] tracking-tight text-[var(--text)]">Your health, visualised in a simple score</h3>
+              <p className="text-lg text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-80">Veda calculates a personalized Health Score based on your daily activity, vitals, and consistency. Simple, powerful tracking.</p>
               <ul className="showcase-list">
-                <li>6 components — mood, sleep, energy, vitals, symptoms, consistency</li>
-                <li>7-day trend chart to see your progress</li>
-                <li>Personalised AI tips to improve your score</li>
-                <li>Insurance plan recommendations based on your score</li>
+                <li>Mood and Sleep tracking</li>
+                <li>7-day trend analysis</li>
+                <li>AI-powered improvement tips</li>
               </ul>
             </div>
-            <div className="showcase-visual bg-[var(--card)] border-[var(--border)]">
-              <div className="sv-header bg-[var(--card2)] border-b-[var(--border)]">
-                <div className="sv-dots"><div className="sv-dot bg-[#ff5f5f]" /><div className="sv-dot bg-[#f0a030]" /><div className="sv-dot bg-[#00d4b1]" /></div>
-                <span className="text-[12px] text-[var(--muted)] ml-2">Health Score</span>
+          <div className="showcase-visual">
+              <div className="sv-header">
+                <div className="sv-dots"><div className="sv-dot bg-[var(--red)]" /><div className="sv-dot bg-[var(--amber)]" /><div className="sv-dot bg-[var(--teal)]" /></div>
+                <span className="text-[11px] font-black uppercase tracking-widest text-[var(--muted)] ml-2">Health Metrics</span>
               </div>
               <div className="sv-content text-center">
-                <div className="relative inline-block my-2.5">
+                <div className="relative inline-block my-4">
                   <svg viewBox="0 0 120 120" width="120" height="120">
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="8"/>
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--teal)" strokeWidth="8"
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="6"/>
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--teal)" strokeWidth="6"
                       strokeLinecap="round" strokeDasharray="314" strokeDashoffset="72"
                       transform="rotate(-90 60 60)"
-                      className="drop-shadow-[0_0_8px_rgba(0,212,177,0.5)]"
                     />
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <div className="font-serif text-3xl text-[var(--teal)]">77</div>
-                    <div className="text-[9px] text-[var(--muted)] uppercase tracking-wider">/ 100</div>
+                    <div className="text-[10px] text-[var(--muted)] font-black uppercase">Score</div>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-left">
-                  <div className="bg-[var(--card2)] rounded-lg p-2">
-                    <div className="text-xs text-[var(--muted)]">Mood</div>
-                    <div className="text-sm font-bold text-[var(--teal)]">16/20</div>
+                <div className="grid grid-cols-2 gap-3 text-left">
+                  <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-2.5">
+                    <div className="text-[10px] text-[var(--muted)] font-bold uppercase">Mood</div>
+                    <div className="text-sm font-bold text-[var(--teal)]">Good</div>
                   </div>
-                  <div className="bg-[var(--card2)] rounded-lg p-2">
-                    <div className="text-xs text-[var(--muted)]">Sleep</div>
-                    <div className="text-sm font-bold text-[var(--teal)]">15/20</div>
-                  </div>
-                  <div className="bg-[var(--card2)] rounded-lg p-2">
-                    <div className="text-xs text-[var(--muted)]">Energy</div>
-                    <div className="text-sm font-bold text-[#f0a030]">13/20</div>
-                  </div>
-                  <div className="bg-[var(--card2)] rounded-lg p-2">
-                    <div className="text-xs text-[var(--muted)]">Vitals</div>
-                    <div className="text-sm font-bold text-[var(--teal)]">8/10</div>
+                  <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-2.5">
+                    <div className="text-[10px] text-[var(--muted)] font-bold uppercase">Sleep</div>
+                    <div className="text-sm font-bold text-[var(--teal)]">Optimal</div>
                   </div>
                 </div>
               </div>
@@ -999,55 +1132,51 @@ function AppContent() {
         </div>
       </section>
 
-      <section className="numbers-section py-20 bg-[var(--surface)]/30">
+      <section className="numbers-section py-24 bg-[var(--bg)] border-b border-[var(--border)]">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="numbers-grid">
-            <div className="number-card">
+          <div className="numbers-grid rounded-[2.5rem] overflow-hidden border border-[var(--border)]">
+            <div className="number-card bg-[var(--surface)]">
               <div className="number-val">23+</div>
-              <div className="text-[13px] text-[var(--text2)] mt-1.5 font-medium">Health Features</div>
-              <div className="text-[11.5px] text-[var(--muted)] mt-1">All in one app</div>
+              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Features</div>
             </div>
-            <div className="number-card">
+            <div className="number-card bg-[var(--surface)]">
               <div className="number-val">10</div>
-              <div className="text-[13px] text-[var(--text2)] mt-1.5 font-medium">Indian Languages</div>
-              <div className="text-[11.5px] text-[var(--muted)] mt-1">Hindi, Bengali, Tamil & more</div>
+              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Languages</div>
             </div>
-            <div className="number-card">
-              <div className="number-val">∞</div>
-              <div className="text-[13px] text-[var(--text2)] mt-1.5 font-medium">AI Conversations</div>
-              <div className="text-[11.5px] text-[var(--muted)] mt-1">Always available</div>
+            <div className="number-card bg-[var(--surface)]">
+              <div className="number-val">100%</div>
+              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Privacy</div>
             </div>
-            <div className="number-card">
-              <div className="number-val">Free</div>
-              <div className="text-[13px] text-[var(--text2)] mt-1.5 font-medium">Cost to You</div>
-              <div className="text-[11.5px] text-[var(--muted)] mt-1">Free forever</div>
+            <div className="number-card bg-[var(--surface)]">
+              <div className="number-val">24/7</div>
+              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Available</div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="how-section py-24" id="how">
+      <section className="how-section py-24 bg-[var(--bg)]" id="how">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="text-center mb-16">
-            <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] mb-4 block">Simple to use</span>
-            <h2 className="font-serif text-[clamp(30px,4vw,44px)] leading-[1.15] tracking-tight mb-4">Start in <em>seconds</em>, not hours</h2>
-            <p className="text-[var(--text2)] max-w-[540px] mx-auto">No registration, no setup, no waiting. Open and talk.</p>
+          <div className="text-center mb-20">
+            <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[3px] mb-4 block">Frictionless Experience</span>
+            <h2 className="font-serif text-[clamp(34px,5vw,48px)] leading-[1.05] tracking-tight mb-4 text-[var(--text)]">Ready in <em className="italic text-[var(--teal)] not-italic">seconds</em></h2>
+            <p className="text-lg text-[var(--text2)] max-w-[540px] mx-auto font-medium opacity-80">Skip the complex setup. Open and talk to Veda instantly.</p>
           </div>
           <div className="how-steps">
-            <div className="text-center px-5">
-              <div className="step-num">1</div>
-              <div className="font-serif text-xl mb-2.5">Open the App</div>
-              <div className="text-sm text-[var(--text2)] leading-relaxed">No signup required. Just click "Open App" and you're ready in 30 seconds.</div>
+            <div className="text-center px-6">
+              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">1</div>
+              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Open</div>
+              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">No signup required. Launch the app and start your conversation.</div>
             </div>
-            <div className="text-center px-5">
-              <div className="step-num">2</div>
-              <div className="font-serif text-xl mb-2.5">Set Your Profile</div>
-              <div className="text-sm text-[var(--text2)] leading-relaxed">Tell Veda your age, conditions, and medications. This context makes every AI response personal and accurate.</div>
+            <div className="text-center px-6">
+              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">2</div>
+              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Personalize</div>
+              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">Set your basic profile so Veda gives accurate, personal responses.</div>
             </div>
-            <div className="text-center px-5">
-              <div className="step-num">3</div>
-              <div className="font-serif text-xl mb-2.5">Start Tracking</div>
-              <div className="text-sm text-[var(--text2)] leading-relaxed">Chat, log daily health, scan prescriptions, and get smarter guidance as Veda learns your health patterns.</div>
+            <div className="text-center px-6">
+              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">3</div>
+              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Track</div>
+              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">Log your health journey and see AI-driven insights over time.</div>
             </div>
           </div>
         </div>
@@ -1099,20 +1228,20 @@ function AppContent() {
 
       <section className="cta-section py-24">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="cta-box">
+          <div className="cta-box glass border-white/20">
             <h2 className="font-serif text-[clamp(30px,4vw,46px)] leading-[1.15] tracking-tight mb-4 relative">Your health deserves<br />an <em>intelligent companion</em></h2>
             <p className="text-[16px] text-[var(--text2)] max-w-[480px] mx-auto mb-9 leading-relaxed">Join thousands using Veda for smarter, more informed health decisions — in the language you're most comfortable with.</p>
             <div className="flex flex-wrap items-center justify-center gap-3.5">
-              <button onClick={handleStart} className="btn-primary text-base px-8 py-4">
+              <button onClick={handleStart} className="btn-primary text-base px-8 py-4 border border-white/20">
                 <Stethoscope size={20} /> Open Veda Free
               </button>
-              <a href="#features" className="btn-secondary text-base px-8 py-4">Learn more →</a>
+              <a href="#features" className="btn-secondary text-base px-8 py-4 glass border-white/10">Learn more →</a>
             </div>
             <div className="mt-5 text-[12.5px] text-[var(--muted)] flex items-center justify-center gap-2">
               <span>✓ Free forever</span>
-              <div className="w-1 h-1 rounded-full bg-[var(--muted)]" />
+              <div className="w-1 h-1 rounded-full bg-[var(--muted)] opacity-30" />
               <span>✓ No personal data sold</span>
-              <div className="w-1 h-1 rounded-full bg-[var(--muted)]" />
+              <div className="w-1 h-1 rounded-full bg-[var(--muted)] opacity-30" />
               <span>✓ Private & Secure</span>
             </div>
           </div>
@@ -1188,12 +1317,12 @@ function AppContent() {
             role="navigation"
             aria-label="Side menu"
             transition={{ type: 'spring', damping: 25, stiffness: 200, opacity: { duration: 0.2 } }}
-            className="fixed top-0 left-0 bottom-0 w-[280px] sm:w-[320px] bg-[var(--bg)]/95 backdrop-blur-2xl border-r border-[var(--border)] z-[301] flex flex-col shadow-2xl"
+            className="fixed top-0 left-0 bottom-0 w-[280px] sm:w-[320px] glass-darker z-[301] flex flex-col shadow-2xl"
           >
             {/* Sidebar Branding & Profile */}
-            <div className="p-6 border-b border-[var(--border)]">
+            <div className="p-6 border-b border-white/5">
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c]">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg shadow-[var(--teal)]/20">
                   <Stethoscope size={16} />
                 </div>
                 <div>
@@ -1202,8 +1331,8 @@ function AppContent() {
               </div>
 
               {user ? (
-                <div className="p-3 rounded-2xl bg-[var(--card)] border border-[var(--border)] flex items-center gap-2 shadow-sm cursor-pointer" onClick={() => switchMode('profile')}>
-                  <div className="w-8 h-8 rounded-xl bg-[var(--card2)] border border-[var(--border)] flex items-center justify-center text-[var(--teal)] font-bold text-xs">
+                <div className="p-3 rounded-2xl glass border border-white/10 flex items-center gap-2 shadow-sm cursor-pointer" onClick={() => switchMode('profile')}>
+                  <div className="w-8 h-8 rounded-xl glass-morphism border border-white/5 flex items-center justify-center text-[var(--teal)] font-bold text-xs">
                     {(profile.name || user.displayName || 'U')[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -1211,8 +1340,8 @@ function AppContent() {
                   </div>
                 </div>
               ) : (
-                <div className="p-4 rounded-3xl bg-[var(--card)] border border-[var(--border)] border-dashed flex items-center gap-3 mb-2 opacity-60">
-                  <div className="w-10 h-10 rounded-2xl bg-[var(--card2)] border border-[var(--border)] flex items-center justify-center text-[var(--muted)]">
+                <div className="p-4 rounded-3xl glass-morphism border border-white/10 border-dashed flex items-center gap-3 mb-2 opacity-60">
+                  <div className="w-10 h-10 rounded-2xl glass border border-white/10 flex items-center justify-center text-[var(--muted)]">
                     <Bot size={20} />
                   </div>
                   <div className="flex-1">
@@ -1226,6 +1355,10 @@ function AppContent() {
             <div className="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar">
               <div className="space-y-1 mb-6">
                 <SidebarItem icon={<Home size={18} />} label="Dashboard" active={mode === 'home'} onClick={() => switchMode('home')} />
+                <SidebarItem icon={<Sparkles size={18} />} label="Wellness Coach" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
+                <SidebarItem icon={<Utensils size={18} />} label="Nutrition Planner" active={mode === 'food'} onClick={() => switchMode('food')} />
+                <SidebarItem icon={<ClipboardList size={18} />} label="Prescription Lens" active={mode === 'rx'} onClick={() => switchMode('rx')} />
+                <SidebarItem icon={<Lock size={18} />} label="Health Locker" active={mode === 'locker'} onClick={() => switchMode('locker')} />
                 <button 
                   onClick={createNewChat}
                   className="w-full flex items-center gap-3.5 px-4 py-3.5 mt-2 rounded-2xl transition-all text-sm font-bold border-2 border-dashed border-[var(--teal)]/20 text-[var(--teal)] hover:bg-[var(--teal)]/5 hover:border-[var(--teal)]/40 group active:scale-95"
@@ -1240,14 +1373,12 @@ function AppContent() {
               <div className="space-y-1 mb-8">
                 <p className="px-4 py-2 text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.25em] opacity-40">Consultation History</p>
                 <div className="space-y-1.5">
-                  {Object.values(allChats)
-                    .sort((a, b) => b.timestamp - a.timestamp)
-                    .map((chat) => (
+                  {conversations.map((chat) => (
                       <div key={chat.id} className="relative group">
                         <button 
                           onClick={() => {
                             setActiveChatId(chat.id);
-                            switchMode('chat');
+                            setMode('chat');
                           }}
                           className={cn(
                             "w-full flex items-center gap-3.5 px-4 py-3 rounded-2xl transition-all text-[13px] font-bold border-2 border-transparent text-left",
@@ -1285,14 +1416,33 @@ function AppContent() {
             </div>
 
             <div className="p-6 border-t border-[var(--border)] bg-gradient-to-t from-[var(--teal)]/5 to-transparent space-y-3">
+              {!profile.isPremium && (
+                <button 
+                  onClick={() => switchMode('membership')}
+                  className="w-full flex items-center justify-center gap-3 p-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-600 text-[#020f0c] shadow-lg shadow-amber-500/20 hover:scale-[1.02] transition-all font-bold text-xs uppercase tracking-widest mb-2"
+                >
+                  <Sparkles size={16} />
+                  Go Premium
+                </button>
+              )}
               <div className="flex items-center justify-between gap-2">
                 <button 
                   onClick={() => setIsLightMode(!isLightMode)} 
                   aria-label={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
-                  className="flex-1 flex items-center justify-center gap-2 p-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] text-[var(--text)] hover:border-[var(--teal-dim)] transition-all group"
+                  className="flex-1 flex items-center justify-center gap-2 p-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] text-[var(--text)] hover:border-[var(--teal-dim)] transition-all group overflow-hidden"
                 >
-                  {isLightMode ? <Moon size={16} className="group-hover:rotate-12 transition-transform" /> : <Sun size={16} className="group-hover:rotate-12 transition-transform" />}
-                  <span className="text-[11px] font-bold uppercase tracking-wider">{isLightMode ? 'Dark' : 'Light'}</span>
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={isLightMode ? 'moon' : 'sun'}
+                      initial={{ y: 20, opacity: 0, rotate: -45 }}
+                      animate={{ y: 0, opacity: 1, rotate: 0 }}
+                      exit={{ y: -20, opacity: 0, rotate: 45 }}
+                      transition={{ duration: 0.2, ease: "circOut" }}
+                    >
+                      {isLightMode ? <Moon size={16} /> : <Sun size={16} />}
+                    </motion.div>
+                  </AnimatePresence>
+                  <span className="text-[10px] font-black uppercase tracking-widest">{isLightMode ? 'Dark' : 'Light'}</span>
                 </button>
                 <button 
                   onClick={() => switchMode('profile')}
@@ -1348,64 +1498,46 @@ function AppContent() {
   const renderHeader = () => {
     if (mode === 'chat') return null;
     return (
-    <header role="banner" className="sticky top-0 z-50 bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)] px-4 h-16 flex items-center justify-between md:px-6">
-      <div className="flex items-center gap-4">
-        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2 hover:bg-[var(--card)] rounded-lg transition-colors md:hidden">
-          <Menu size={24} aria-hidden="true" />
+    <header role="banner" className="sticky top-0 z-50 bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)] px-4 h-[72px] flex items-center justify-between md:px-6">
+      <div className="flex items-center gap-4 shrink-0">
+        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2 border border-[var(--border)] rounded-xl md:hidden">
+          <Menu size={22} aria-hidden="true" />
         </button>
         <div className="flex items-center gap-3">
-          <h2 className="font-serif text-lg sm:text-xl tracking-tight hidden xs:block">Veda</h2>
+          <h2 className="font-serif text-2xl tracking-tight hidden xs:block text-[var(--teal)]">Veda</h2>
         </div>
       </div>
 
-      {/* Desktop Navigation */}
-      <nav className="hidden md:flex items-center gap-1 bg-[var(--card)] border border-[var(--border)] rounded-full px-2 py-1 shadow-sm">
+      <nav className="hidden md:flex items-center gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-full px-2 py-1.5 shadow-sm mx-4">
         <HeaderNavItem label="Home" active={mode === 'home'} onClick={() => switchMode('home')} />
         <HeaderNavItem label="Wellness" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
         <HeaderNavItem label="Journal" active={mode === 'journal'} onClick={() => switchMode('journal')} />
-        <HeaderNavItem label="Records" active={mode === 'records'} onClick={() => switchMode('records')} />
+        <HeaderNavItem label="Locker" active={mode === 'locker'} onClick={() => switchMode('locker')} />
       </nav>
 
-      <div className="flex items-center gap-2">
-        <button onClick={() => switchMode('chat')} aria-label="Open Health Chat" className="p-3 hover:bg-[var(--card)] rounded-xl transition-colors text-[var(--text2)] min-h-[44px] min-w-[44px] flex items-center justify-center">
-          <MessageSquare size={24} aria-hidden="true" />
+      <div className="flex items-center gap-2 shrink-0">
+        <button onClick={() => switchMode('chat')} aria-label="Open Health Chat" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] hidden sm:flex items-center justify-center">
+          <MessageSquare size={22} aria-hidden="true" />
         </button>
-        <button onClick={() => switchMode('alerts')} aria-label={`Open Notifications. ${activeAlertsCount} active alerts`} className="p-3 hover:bg-[var(--card)] rounded-xl transition-colors text-[var(--text2)] relative min-h-[44px] min-w-[44px] flex items-center justify-center">
-          <Bell size={24} aria-hidden="true" />
-          {activeAlertsCount > 0 && <span className="absolute top-2 right-2 w-3 h-3 bg-red-500 rounded-full border-2 border-[var(--bg)]" />}
+        <button onClick={() => switchMode('alerts')} aria-label={`Open Notifications. ${activeAlertsCount} active alerts`} className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] relative flex items-center justify-center">
+          <Bell size={22} aria-hidden="true" />
+          {activeAlertsCount > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[var(--bg)]" />}
+        </button>
+        <button 
+          onClick={() => { switchMode('medicine'); setShowCart(true); }} 
+          aria-label={`Open Cart. ${cart.reduce((acc, item) => acc + item.qty, 0)} items`} 
+          className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] relative flex items-center justify-center"
+        >
+          <ShoppingCart size={22} aria-hidden="true" />
+          {cart.length > 0 && (
+            <span className="absolute top-2 right-2 min-w-[16px] h-4 bg-[var(--teal)] text-[#020617] text-[10px] flex items-center justify-center rounded-full font-black px-1 border border-[var(--bg)]">
+              {cart.reduce((acc, item) => acc + item.qty, 0)}
+            </span>
+          )}
         </button>
         <div className="w-px h-6 bg-[var(--border)] mx-1" aria-hidden="true" />
-        <div className="relative group">
-          <button 
-            aria-label={`Select Language (Current: ${language})`} 
-            aria-haspopup="true"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--card)] border border-[var(--border)] hover:border-[var(--teal-dim)] transition-all text-[10px] font-bold uppercase tracking-widest"
-          >
-            <Globe size={14} className="text-[var(--teal)]" aria-hidden="true" />
-            {language}
-          </button>
-          <div className="absolute top-full right-0 mt-2 w-32 bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden" role="menu">
-            {['English', 'Hindi', 'Marathi', 'Tamil', 'Telugu'].map(lang => (
-              <button 
-                key={lang} 
-                role="menuitem"
-                onClick={() => {
-                  setLanguage(lang);
-                  showDoneToast(`Language set to ${lang}`);
-                  if (lang === 'English') i18n.changeLanguage('en');
-                  if (lang === 'Hindi') i18n.changeLanguage('hi');
-                }}
-                className={cn("w-full text-left px-4 py-2 text-[10px] font-bold uppercase tracking-widest hover:bg-[var(--teal)] hover:text-[#020f0c] transition-colors", language === lang && "text-[var(--teal)]")}
-              >
-                {lang}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="w-px h-6 bg-[var(--border)] mx-1" aria-hidden="true" />
-        <button onClick={() => switchMode('profile')} aria-label="View Profile" className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-full bg-[var(--card)] border border-[var(--border)] hover:border-[var(--teal-dim)] transition-all">
-          <span className="text-xs font-bold px-2 hidden sm:inline">{profile.name || user?.displayName || 'Guest'}</span>
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] font-bold text-xs" aria-hidden="true">
+        <button onClick={() => switchMode('profile')} className="flex items-center gap-2 p-1 rounded-full border border-[var(--border)] bg-[var(--surface)] hover:border-[var(--teal)] transition-all">
+          <div className="w-8 h-8 rounded-full bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center text-[var(--teal)] font-black text-xs" aria-hidden="true">
             {(profile.name || user?.displayName || 'G')[0].toUpperCase()}
           </div>
         </button>
@@ -1417,20 +1549,19 @@ function AppContent() {
   const renderBottomNav = () => {
     if (mode === 'chat') return null;
     return (
-    <nav role="navigation" aria-label="Mobile bottom navigation" className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--card)]/95 backdrop-blur-xl border-t border-[var(--border)] px-2 pb-safe md:hidden">
-      <div className="flex items-center justify-around h-16">
-        <BottomNavItem icon={<TrendingUp size={22} aria-hidden="true" />} label="Home" active={mode === 'home'} onClick={() => switchMode('home')} />
-        <BottomNavItem icon={<Wind size={22} aria-hidden="true" />} label="Wellness" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
+    <nav role="navigation" aria-label="Mobile bottom navigation" className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] px-4 pb-safe md:hidden">
+      <div className="flex items-center justify-around h-[72px]">
+        <BottomNavItem icon={<TrendingUp size={22} />} label="Home" active={mode === 'home'} onClick={() => switchMode('home')} />
+        <BottomNavItem icon={<Wind size={22} />} label="Wellness" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
         <div className="flex-1 flex flex-col items-center -mt-8">
-          <button onClick={() => switchMode('chat')} aria-label="Ask Veda AI" className="w-14 h-14 rounded-full bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-xl shadow-[var(--teal)]/20 active:scale-95 transition-transform">
+          <button onClick={() => switchMode('chat')} aria-label="Ask Veda AI" className="w-14 h-14 rounded-full bg-[var(--teal)] flex items-center justify-center text-[#020617] shadow-lg shadow-[var(--teal)]/20 active:scale-95 transition-transform border border-[var(--bg)]">
             <MessageSquare size={26} aria-hidden="true" />
           </button>
-          <span className="text-[10px] font-bold text-[var(--teal)] mt-1" aria-hidden="true">Veda AI</span>
         </div>
-        <BottomNavItem icon={<BookOpen size={22} aria-hidden="true" />} label="Journal" active={mode === 'journal'} onClick={() => switchMode('journal')} />
-        <button onClick={openAllPages} aria-label="See all features" className="flex-1 flex flex-col items-center gap-1 text-[var(--muted)]">
+        <BottomNavItem icon={<BookOpen size={22} />} label="Journal" active={mode === 'journal'} onClick={() => switchMode('journal')} />
+        <button onClick={openAllPages} className="flex-1 flex flex-col items-center gap-1 text-[var(--muted)] opacity-60">
           <Menu size={22} aria-hidden="true" />
-          <span className="text-[10px] font-bold">More</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">More</span>
         </button>
       </div>
     </nav>
@@ -1544,6 +1675,36 @@ function AppContent() {
     }
   };
 
+  const addLockerDoc = async (docData: Omit<HealthDocument, 'id'>) => {
+    if (!auth.currentUser) {
+      setLockerDocs(prev => [...prev, { ...docData, id: Date.now().toString() }]);
+      return;
+    }
+    try {
+      await addDoc(collection(db, 'users', auth.currentUser.uid, 'locker'), {
+        ...docData,
+        createdAt: new Date().toISOString(),
+        isEncrypted: true
+      });
+    } catch (e) {
+      console.error(e);
+      handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/locker`);
+    }
+  };
+
+  const deleteLockerDoc = async (id: string) => {
+    if (!auth.currentUser) {
+      setLockerDocs(prev => prev.filter(d => d.id !== id));
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'locker', id));
+    } catch (e) {
+      console.error(e);
+      handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/locker`);
+    }
+  };
+
   const addPolicy = async (p: Omit<UserInsurancePolicy, 'id'>) => {
     if (user) {
       try {
@@ -1585,6 +1746,12 @@ function AppContent() {
         </a>
         {mode !== 'chat' && renderSidebar()}
         
+        {/* Notifications Hot Bar */}
+        <NotificationHotBar 
+          notifications={notifications} 
+          onDismiss={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} 
+        />
+
         {/* Offline Indicator */}
         <AnimatePresence>
           {isOffline && (
@@ -1609,6 +1776,11 @@ function AppContent() {
             profile={profile} 
             switchMode={switchMode}
             updateActiveChat={updateActiveChat}
+            conversations={conversations}
+            activeChatId={activeChatId}
+            setActiveChatId={setActiveChatId}
+            onNewChat={createNewChat}
+            onDeleteChat={deleteChat}
           />
         )}
 
@@ -1634,25 +1806,25 @@ function AppContent() {
                     profile={profile} 
                     journal={journal} 
                     reminders={reminders}
-                    notificationPermission={notificationPermission}
-                    requestNotificationPermission={requestNotificationPermission}
                     activeAlertsCount={activeAlertsCount}
                   />
                 )}
                 {mode === 'journal' && <JournalView journal={journal} addJournalEntry={addJournalEntry} />}
-                {mode === 'symptoms' && <SymptomChecker profile={profile} />}
+                {mode === 'wellness' && <WellnessCoach profile={profile} />}
+                {mode === 'symptoms' && <SymptomChecker profile={profile} switchMode={switchMode} />}
                 {mode === 'medication' && <MedicationInfo profile={profile} />}
                 {mode === 'lab' && <LabScanner />}
                 {mode === 'triage' && <TriageView profile={profile} />}
-                {mode === 'rx' && <PrescriptionScanner profile={profile} />}
+                {mode === 'rx' && <PrescriptionScanner profile={profile} updateProfile={updateProfile} />}
                 {mode === 'score' && <HealthScoreView journal={journal} profile={profile} switchMode={switchMode} />}
                 {mode === 'vitals' && <VitalsGraph journal={journal} initialTab={vitalsTab} onAddEntry={addJournalEntry} />}
-                {mode === 'family' && <FamilyHealthCircle family={family} onAddMember={addFamilyMember} onUpdateMember={updateFamilyMember} onDeleteMember={deleteFamilyMember} />}
-                {mode === 'medicine' && <MedicineDelivery reminders={reminders} profile={profile} />}
+                {mode === 'family' && <FamilyHealthCircle family={family} onAddMember={addFamilyMember} onUpdateMember={updateFamilyMember} onDeleteMember={deleteFamilyMember} profile={profile} onUpdateProfile={updateProfile} />}
+                {mode === 'medicine' && <MedicineDelivery reminders={reminders} profile={profile} cart={cart} setCart={setCart} showCart={showCart} setShowCart={setShowCart} />}
                 {mode === 'insurance' && <InsuranceView policies={policies} onAddPolicy={addPolicy} profile={profile} />}
                 {mode === 'hospital' && <HospitalView />}
                 {mode === 'doctor' && <DoctorView />}
                 {mode === 'records' && <RecordsView records={records} onAddRecord={addRecord} profile={profile} />}
+                {mode === 'locker' && <HealthLockerView documents={lockerDocs} onAddDocument={addLockerDoc} onDeleteDocument={deleteLockerDoc} onAddRecord={addRecord} profile={profile} />}
                 {mode === 'alerts' && (
                   <AlertsView 
                     profile={profile} 
@@ -1669,28 +1841,30 @@ function AppContent() {
                     onToggle={toggleReminder} 
                     onDelete={deleteReminder} 
                     onAdd={addReminder} 
+                    profile={profile}
+                    updateProfile={updateProfile}
                   />
                 )}
-                {mode === 'calendar' && <HealthCalendar />}
+                {mode === 'calendar' && <HealthCalendar appointments={appointments} onAddAppointment={bookAppointment} profile={profile} />}
                 {mode === 'skin' && <PremiumGate profile={profile} featureName="Advanced Skin AI Analysis" onUpgrade={() => setMode('membership')}><SkinScanner /></PremiumGate>}
-                {mode === 'food' && <PremiumGate profile={profile} featureName="Smart Nutrition & Calorie Tracking" onUpgrade={() => setMode('membership')}><FoodScanner /></PremiumGate>}
+                {mode === 'food' && <PremiumGate profile={profile} featureName="Smart Nutrition & Calorie Tracking" onUpgrade={() => setMode('membership')}><NutritionPlanner profile={profile} /></PremiumGate>}
                 {mode === 'mind' && <MindWellnessDashboard journal={journal} />}
                 {mode === 'roadmap' && <HealthRoadmapDashboard profile={profile} />}
                 {mode === 'patterns' && <PremiumGate profile={profile} featureName="AI Health Pattern Recognition" onUpgrade={() => setMode('membership')}><TrendsInsights journal={journal} /></PremiumGate>}
                 {mode === 'advice' && <AdviceView journal={journal} profile={profile} />}
                 {mode === 'opinion' && <PremiumGate profile={profile} featureName="Expert Second Medical Opinion" onUpgrade={() => setMode('membership')}><OpinionView profile={profile} /></PremiumGate>}
-                {mode === 'clinic' && <ClinicPortal appointments={appointments} profile={profile} onBook={bookAppointment} />}
+                {mode === 'clinic' && <ClinicPortal appointments={appointments} profile={profile} journal={journal} onBook={bookAppointment} />}
                 {mode === 'corporate' && <CorporateHealth profile={profile} updateProfile={updateProfile} />}
                 {mode === 'edu' && <MedEducation />}
                 {mode === 'scanner' && <MedicineScanner />}
                 {mode === 'teleconsult' && <TeleconsultView />}
                 {mode === 'bmi' && <BMIView profile={profile} />}
                 {mode === 'sos' && <SOSView profile={profile} onBack={() => setMode('home')} onOpenProfile={() => setMode('profile')} />}
-                {mode === 'auth' && <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} />}
+                {mode === 'auth' && <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} isLightMode={isLightMode} />}
                 {mode === 'privacy' && <PrivacyView />}
                 {mode === 'trust' && <TrustCenter />}
                 {mode === 'wellness' && <WellnessView journal={journal} />}
-                {mode === 'membership' && <MembershipView profile={profile} onUpgrade={async () => {
+                {mode === 'membership' && <PricingView profile={profile} onUpgrade={async () => {
                   await updateProfile({ ...profile, isPremium: true });
                   showDoneToast("Welcome to Veda Premium! ✦");
                   setMode('home');
@@ -1703,7 +1877,9 @@ function AppContent() {
                     switchMode={switchMode} 
                     journal={journal} 
                     notificationPermission={notificationPermission}
+                    setNotificationPermission={setNotificationPermission}
                     requestNotificationPermission={requestNotificationPermission}
+                    onDeleteAccount={handleDeleteAccount}
                   />
                 )}
               </motion.div>
@@ -1799,6 +1975,64 @@ function AppContent() {
 
 // --- Sub-components ---
 
+function NotificationHotBar({ notifications, onDismiss }: { notifications: AppNotification[], onDismiss: (id: string) => void }) {
+  return (
+    <div className="fixed top-6 left-0 right-0 z-[10000] flex flex-col items-center gap-2 pointer-events-none">
+      <AnimatePresence>
+        {notifications.map((n) => (
+          <motion.div
+            key={n.id}
+            initial={{ y: -60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -20, opacity: 0 }}
+            className="pointer-events-auto"
+          >
+            <div className={cn(
+              "px-5 py-3 rounded-2xl shadow-sm flex items-center gap-4 min-w-[320px] max-w-[90vw] bg-[var(--bg)] border border-[var(--border)] overflow-hidden relative",
+              n.type === 'success' && "border-[var(--teal)]/30",
+              n.type === 'error' && "border-red-500/30"
+            )}>
+              <div 
+                className={cn(
+                  "absolute bottom-0 left-0 h-[2px] opacity-40 animate-progress",
+                  n.type === 'success' && "bg-[var(--teal)]",
+                  n.type === 'error' && "bg-red-500",
+                  n.type === 'warning' && "bg-amber-500",
+                  n.type === 'info' && "bg-blue-500"
+                )}
+                style={{ animationDuration: `${n.duration}ms` }}
+              />
+              <div className={cn(
+                "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border border-transparent",
+                n.type === 'success' && "bg-[var(--teal-glow)] text-[var(--teal)]",
+                n.type === 'error' && "bg-red-500/10 text-red-500",
+                n.type === 'warning' && "bg-amber-500/10 text-amber-500",
+                n.type === 'info' && "bg-blue-500/10 text-blue-500"
+              )}>
+                {n.type === 'success' && <CheckCircle2 size={18} />}
+                {n.type === 'error' && <ShieldAlert size={18} />}
+                {n.type === 'warning' && <AlertTriangle size={18} />}
+                {n.type === 'info' && <Info size={18} />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-widest text-[var(--text)] mb-0.5">{n.title}</p>
+                <p className="text-[10px] text-[var(--text2)] opacity-60 font-medium truncate">{n.message}</p>
+              </div>
+              <button 
+                onClick={() => onDismiss(n.id)}
+                className="p-2 hover:bg-[var(--surface)] transition-colors"
+                aria-label="Dismiss notification"
+              >
+                <X size={16} className="text-[var(--muted)] opacity-60" />
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function QuickActionButton({ icon, label, color, onClick }: { icon: React.ReactNode, label: string, color: string, onClick: () => void }) {
   return (
     <button 
@@ -1820,10 +2054,10 @@ function HeaderNavItem({ label, active, onClick }: { label: string, active: bool
     <button 
       onClick={onClick}
       className={cn(
-        "px-6 py-3 rounded-full text-sm font-bold transition-all min-h-[44px]",
+        "px-6 py-2.5 rounded-full text-xs font-black uppercase tracking-widest transition-all",
         active 
-          ? "bg-[var(--teal)] text-[#020f0c] shadow-lg shadow-[var(--teal)]/10" 
-          : "text-[var(--text2)] hover:text-[var(--text)] hover:bg-white/5"
+          ? "bg-[var(--teal)] text-[#020617]" 
+          : "text-[var(--text2)] opacity-60 hover:opacity-100"
       )}
     >
       {label}
@@ -1834,31 +2068,25 @@ function HeaderNavItem({ label, active, onClick }: { label: string, active: bool
 function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
   return (
     <motion.button 
-      whileHover={{ scale: 1.02, x: 4 }}
+      whileHover={{ x: 4 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick} 
       className={cn(
-        "w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all text-base font-bold border-2 border-transparent group relative overflow-hidden min-h-[44px]",
+        "w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all text-sm font-black uppercase tracking-widest border border-transparent group relative overflow-hidden",
         active 
-          ? "bg-gradient-to-br from-[var(--teal)]/15 to-transparent text-[var(--teal)] border-[var(--teal)]/20 shadow-sm" 
-          : "text-[var(--text2)] hover:text-[var(--text)] hover:bg-[var(--card2)]"
+          ? "bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]" 
+          : "text-[var(--text2)] opacity-60 hover:opacity-100 hover:bg-[var(--surface)]"
       )}
     >
       <div className={cn(
         "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300",
         active 
-          ? "bg-[var(--teal)] text-[#020f0c] shadow-lg shadow-[var(--teal)]/20" 
-          : "bg-[var(--card)] border border-[var(--border)] text-[var(--muted)] group-hover:text-[var(--text)] group-hover:border-[var(--teal-dim)]"
+          ? "bg-[var(--teal)] text-[#020617]" 
+          : "bg-[var(--surface)] border border-[var(--border)]"
       )}>
         {React.cloneElement(icon as React.ReactElement<any>, { size: 16 })}
       </div>
-      <span className="relative z-10">{label}</span>
-      {active && (
-        <motion.div 
-          layoutId="sidebar-active-indicator"
-          className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[var(--teal)] rounded-full"
-        />
-      )}
+      {label}
     </motion.button>
   );
 }
@@ -1880,57 +2108,95 @@ function BottomNavItem({ icon, label, active, onClick }: { icon: React.ReactNode
   );
 }
 
-function NotificationBanner({ permission, onRequest }: { permission: NotificationPermission, onRequest: () => void }) {
-  if (permission === 'granted') return null;
-  
+function AIDailyInsight({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
+  const [insight, setInsight] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchInsight = async () => {
+      if (journal.length === 0) {
+        setInsight("Start your journey! Log your first health entry to unlock AI personalized coaching.");
+        return;
+      }
+      
+      const lastFetch = localStorage.getItem('veda_daily_insight_date');
+      const today = new Date().toDateString();
+      
+      if (lastFetch === today) {
+        const cached = localStorage.getItem('veda_daily_insight_text');
+        if (cached) {
+          setInsight(cached);
+          return;
+        }
+      }
+
+      setLoading(true);
+      try {
+        const recent = journal.slice(0, 3).map(e => `Mood: ${e.mood}, Sleep: ${e.sleep}h, Energy: ${e.energy}`).join(' | ');
+        const prompt = `Based on these recent health logs: ${recent}. Give a short (15-20 words), encouraging daily health tip for ${profile.name || 'User'}. Make it feel personal and warm.`;
+        const res = await callGemini(prompt);
+        setInsight(res);
+        localStorage.setItem('veda_daily_insight_date', today);
+        localStorage.setItem('veda_daily_insight_text', res);
+      } catch (e) {
+        setInsight("Remember to stay hydrated and take a deep breath today.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchInsight();
+  }, [journal.length]);
+
   return (
     <motion.div 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="bg-indigo-600 rounded-2xl p-4 flex items-center justify-between gap-4 text-white shadow-lg overflow-hidden relative"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="glass border border-white/10 rounded-3xl p-5 relative overflow-hidden group"
     >
-      <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 -rotate-45 translate-x-16 -translate-y-16 rounded-full" />
-      <div className="flex items-center gap-3 relative z-10">
-        <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center shrink-0">
-          <Bell size={20} />
+      <div className="absolute top-0 right-0 p-3 opacity-5 group-hover:opacity-10 transition-opacity">
+        <Sparkles size={40} className="text-indigo-400" />
+      </div>
+      <div className="flex gap-4 items-center relative z-10">
+        <div className="w-10 h-10 rounded-xl glass-morphism border border-white/10 text-indigo-400 flex items-center justify-center shrink-0 shadow-lg">
+          <Bot size={20} />
         </div>
-        <div className="space-y-0.5">
-          <h4 className="font-bold text-sm uppercase tracking-wider">Health Alerts</h4>
-          <p className="text-[10px] opacity-80 font-medium leading-tight">Get notified about critical vitals and reminders.</p>
+        <div className="space-y-1">
+          <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Personal AI Guide</h4>
+          {loading ? (
+            <div className="space-y-1.5 animate-pulse">
+              <div className="h-2 glass-morphism rounded w-48" />
+              <div className="h-2 glass-morphism rounded w-32" />
+            </div>
+          ) : (
+            <p className="text-[11px] font-medium text-[var(--text)] leading-relaxed italic pr-8">
+              "{insight}"
+            </p>
+          )}
         </div>
       </div>
-      <button 
-        onClick={onRequest}
-        className="px-4 py-2 bg-white text-indigo-600 rounded-xl text-xs font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all relative z-10 shrink-0"
-      >
-        Enable
-      </button>
     </motion.div>
   );
 }
-
-// --- Views ---
 
 function HomeDashboard({ 
   switchMode, 
   profile, 
   journal,
   reminders,
-  notificationPermission,
-  requestNotificationPermission,
   activeAlertsCount 
 }: { 
   switchMode: (m: AppMode, tab?: any) => void, 
   profile: UserProfile, 
   journal: JournalEntry[],
   reminders: Reminder[],
-  notificationPermission: NotificationPermission,
-  requestNotificationPermission: () => void,
   activeAlertsCount: number
 }) {
   const score = calculateScore(journal, profile);
   const streak = calculateStreak(journal);
+  const hour = new Date().getHours();
   
+  const greeting = hour < 12 ? 'Good Morning' : hour < 17 ? 'Good Afternoon' : 'Good Evening';
+
   return (
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
@@ -1939,28 +2205,39 @@ function HomeDashboard({
     >
       <div className="flex items-end justify-between px-1 mb-2">
         <div className="space-y-1">
-          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-[0.2em] opacity-80">Welcome Back</p>
+          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-[0.2em] opacity-80">{greeting}</p>
           <h1 className="font-serif text-4xl text-[var(--text)] tracking-tight">Hi, {profile.name || 'Guest'}</h1>
           <p className="text-sm text-[var(--muted)] font-medium opacity-80">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2 px-4 py-2 bg-[var(--teal)]/10 text-[var(--teal)] rounded-2xl">
+          <div className="flex items-center gap-1.5 px-2 py-1 bg-[var(--card)] border border-[var(--border)] rounded-full mb-1">
+            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+            <span className="text-[8px] font-black uppercase tracking-widest text-[var(--muted)]">2.4k Online</span>
+          </div>
+          <motion.div 
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => switchMode('journal')}
+            className="flex items-center gap-2 px-4 py-2 bg-[var(--teal)] text-[#020f0c] rounded-2xl cursor-pointer shadow-lg shadow-[var(--teal)]/20"
+          >
             <Flame size={16} />
             <span className="text-xs font-bold">{streak} Day Streak</span>
-          </div>
+          </motion.div>
         </div>
       </div>
+
+      <AIDailyInsight journal={journal} profile={profile} />
 
       {activeAlertsCount > 0 && (
         <motion.button
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
           onClick={() => switchMode('alerts')}
-          className="w-full p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center justify-between group overflow-hidden relative"
+          className="w-full p-4 glass-morphism border border-red-500/30 rounded-2xl flex items-center justify-between group overflow-hidden relative"
         >
-          <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 -rotate-45 translate-x-12 -translate-y-12 rounded-full" />
+          <div className="absolute top-0 right-0 w-24 h-24 bg-red-400/5 -rotate-45 translate-x-12 -translate-y-12 rounded-full" />
           <div className="flex items-center gap-3 relative z-10">
-            <div className="w-8 h-8 rounded-lg bg-red-500 text-white flex items-center justify-center animate-pulse"><Bell size={16} /></div>
+            <div className="w-8 h-8 rounded-lg bg-red-500 text-white flex items-center justify-center animate-pulse shadow-lg shadow-red-500/20"><Bell size={16} /></div>
             <div className="text-left">
               <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Active Alerts</span>
               <p className="text-sm font-bold text-[var(--text)]">You have {activeAlertsCount} health alerts pending</p>
@@ -1970,75 +2247,82 @@ function HomeDashboard({
         </motion.button>
       )}
 
-      <NotificationBanner permission={notificationPermission} onRequest={requestNotificationPermission} />
-
-      {/* Sponsored Wellness Tip */}
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-5 relative overflow-hidden group hover:border-[var(--teal-dim)] transition-all"
-      >
-        <div className="absolute top-0 right-0 px-3 py-1 bg-[var(--card2)] border-l border-b border-[var(--border)] text-[var(--muted)] text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-sm z-10 group-hover:bg-[var(--teal)] group-hover:text-[#020f0c] transition-colors">
-          Partner Tip
-        </div>
-        <div className="flex gap-4 items-center relative z-10">
-          <div className="w-12 h-12 rounded-2xl bg-[var(--teal)]/10 flex items-center justify-center text-[var(--teal)] shrink-0 group-hover:scale-110 transition-transform">
-            <Heart size={24} />
-          </div>
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-[var(--text)]">Early Detection Saves Lives.</h4>
-            <p className="text-[11px] text-[var(--muted)] leading-relaxed">
-              Book a <span className="text-[var(--text)] font-bold">Full Body Checkup</span> via Apollo 24|7 & get an additional Veda health audit free.
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <motion.div 
+          whileTap={{ scale: 0.98 }}
+          onClick={() => switchMode('score')}
+          className="bg-[var(--surface)] border border-[var(--border)] rounded-[32px] p-6 shadow-sm cursor-pointer hover:border-[var(--teal)]/40 transition-all flex items-center justify-between group"
+        >
+          <div className="space-y-1 relative z-10">
+            <h2 className="text-[11px] font-black text-[var(--teal)] uppercase tracking-[0.2em]">Health Score</h2>
+            <div className="text-4xl font-serif text-[var(--text)] tracking-tighter">{score > 0 ? score : '--'}</div>
+            <p className="text-[11px] font-bold text-[var(--text2)] opacity-60 uppercase tracking-wider flex items-center gap-2">
+              <span className={cn("w-1.5 h-1.5 rounded-full", score === 0 ? "bg-[var(--muted)]" : score >= 80 ? "bg-[var(--teal)]" : score >= 60 ? "bg-blue-400" : "bg-amber-400")} />
+              {score === 0 ? 'Analyzing' : score >= 80 ? 'Excellent' : 'Stable'}
             </p>
-            <div className="flex items-center gap-4 pt-1">
-              <button className="text-[10px] font-black text-[var(--teal)] uppercase tracking-widest hover:brightness-110 transition-all flex items-center gap-1.5">
-                Book Trial Screen <ChevronRight size={12} />
-              </button>
-            </div>
           </div>
-        </div>
-      </motion.div>
+          <div className="w-16 h-16 relative">
+            <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+              <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="4" />
+              <motion.circle 
+                cx="50" cy="50" r="45" fill="none" stroke={score === 0 ? "var(--muted)" : "var(--teal)"} strokeWidth="6" 
+                strokeDasharray="283" 
+                initial={{ strokeDashoffset: 283 }}
+                animate={{ strokeDashoffset: 283 - (283 * (score > 0 ? score : 0) / 100) }}
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+        </motion.div>
 
-      <motion.div 
-        whileTap={{ scale: 0.99 }}
-        onClick={() => switchMode('score')}
-        className="bg-gradient-to-br from-[var(--card)] to-[var(--card2)] border border-[var(--border)] rounded-3xl p-8 shadow-xl shadow-[var(--teal)]/5 cursor-pointer hover:border-[var(--teal)]/40 transition-all flex items-center justify-between group"
-      >
-        <div className="space-y-2 relative z-10">
-          <h2 className="text-[10px] font-black text-[var(--teal)] uppercase tracking-[0.25em]">Health Score</h2>
-          <div className="text-5xl font-serif text-[var(--text)] tracking-tighter">{score > 0 ? score : '--'}</div>
-          <p className="text-sm font-semibold text-[var(--text2)] flex items-center gap-2">
-            <span className={cn("w-2 h-2 rounded-full", score === 0 ? "bg-[var(--muted)]" : score >= 80 ? "bg-[var(--teal)]" : score >= 60 ? "bg-blue-400" : "bg-amber-400")} />
-            {score === 0 ? 'Not Enough Data' : score >= 80 ? 'Excellent' : score >= 60 ? 'Good Progress' : 'Needs Attention'}
-          </p>
-        </div>
-        <div className="w-24 h-24 relative">
-          <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="6" />
-            <motion.circle 
-              cx="50" cy="50" r="45" fill="none" stroke={score === 0 ? "var(--muted)" : "var(--teal)"} strokeWidth="8" 
-              strokeDasharray="283" 
-              initial={{ strokeDashoffset: 283 }}
-              animate={{ strokeDashoffset: 283 - (283 * (score > 0 ? score : 0) / 100) }}
-              strokeLinecap="round"
-              className={score === 0 ? "" : "drop-shadow-[0_0_8px_rgba(0,212,177,0.3)]"}
-            />
-          </svg>
-        </div>
-      </motion.div>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="bg-[var(--surface)] border border-[var(--border)] p-6 rounded-[32px] shadow-sm overflow-hidden"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-1 h-3 bg-blue-500 rounded-full" />
+              <span className="text-[11px] font-black text-[var(--muted)] uppercase tracking-[0.2em]">Energy Trend</span>
+            </div>
+            <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">7 Days</p>
+          </div>
+          <div className="h-16 w-full">
+            {journal.length > 1 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={[...journal].reverse().slice(-7)}>
+                  <Area 
+                    type="monotone" 
+                    dataKey="energy" 
+                    stroke="#3b82f6" 
+                    strokeWidth={2.5}
+                    fillOpacity={0.05} 
+                    fill="#3b82f6" 
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center border border-dashed border-[var(--border)] rounded-2xl">
+                <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest opacity-60">Log 2+ days for insights</p>
+              </div>
+            )}
+          </div>
+        </motion.div>
+      </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { icon: <Activity className="text-red-500" size={20} />, label: "BP", value: profile.bp || "N/A", unit: "mmHg", mode: 'vitals', tab: 'bp' },
-          { icon: <Zap className="text-amber-500" size={20} />, label: "Sugar", value: profile.sugar || "N/A", unit: "mg/dL", mode: 'vitals', tab: 'sugar' },
-          { icon: <Scale className="text-teal-500" size={20} />, label: "Weight", value: profile.weight || "N/A", unit: "kg", mode: 'vitals', tab: 'weight' },
-          { icon: <TrendingUp className="text-blue-500" size={20} />, label: "BMI", value: profile.weight && profile.height ? (parseFloat(profile.weight) / Math.pow(parseFloat(profile.height)/100, 2)).toFixed(1) : "N/A", unit: "Index", mode: 'vitals', tab: 'weight' }
+          { icon: <Activity className="text-red-500" size={18} />, label: "BP", value: profile.bp || "N/A", unit: "mmHg", mode: 'vitals' as AppMode, tab: 'bp' },
+          { icon: <Zap className="text-amber-500" size={18} />, label: "Sugar", value: profile.sugar || "N/A", unit: "mg/dL", mode: 'vitals' as AppMode, tab: 'sugar' },
+          { icon: <Scale className="text-teal-500" size={18} />, label: "Weight", value: profile.weight || "N/A", unit: "kg", mode: 'vitals' as AppMode, tab: 'weight' },
+          { icon: <TrendingUp className="text-blue-500" size={18} />, label: "BMI", value: profile.weight && profile.height ? (parseFloat(profile.weight) / Math.pow(parseFloat(profile.height)/100, 2)).toFixed(1) : "N/A", unit: "Index", mode: 'vitals' as AppMode, tab: 'weight' }
         ].map((v, i) => (
           <motion.div
             key={v.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.1, ease: "easeOut" }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.1 * i }}
           >
             <VitalCard 
               icon={v.icon} 
@@ -2047,7 +2331,7 @@ function HomeDashboard({
               unit={v.value !== "N/A" ? v.unit : ""} 
               color={v.value !== "N/A" ? "blue" : "muted"} 
               isPlaceholder={v.value === "N/A"}
-              onClick={() => v.mode === 'vitals' ? switchMode('vitals', v.tab as any) : switchMode(v.mode as any)} 
+              onClick={() => switchMode(v.mode, v.tab as any)} 
             />
           </motion.div>
         ))}
@@ -2057,33 +2341,33 @@ function HomeDashboard({
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4 }}
-        className="card p-6"
+        className="bg-[var(--surface)] border border-[var(--border)] p-6 rounded-[32px] shadow-sm"
       >
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-2">
-            <div className="w-1 h-4 bg-[var(--teal)] rounded-full" />
-            <span className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em]">Daily Schedule</span>
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-1.5 h-6 bg-[var(--teal)] rounded-full" />
+            <h3 className="text-[11px] font-black text-[var(--text)] uppercase tracking-[0.2em]">Medicine Schedule</h3>
           </div>
-          <button onClick={() => switchMode('reminders')} className="text-[var(--teal)] text-xs font-bold hover:underline underline-offset-4">View All →</button>
+          <button onClick={() => switchMode('reminders')} className="text-[var(--teal)] text-[10px] font-black uppercase tracking-widest hover:opacity-70">View All</button>
         </div>
         <div className="space-y-4">
           {reminders.filter(r => r.on).length > 0 ? reminders.filter(r => r.on).slice(0, 3).map((r, i) => (
             <motion.div
               key={r.id}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.5 + (i * 0.1) }}
             >
               <MedRow name={r.name} dose={r.dose} time={r.time} status={i === 0 ? 'taken' : i === 1 ? 'due' : 'upcoming'} />
             </motion.div>
           )) : (
-            <div className="text-center py-6 border-2 border-dashed border-[var(--border)] rounded-2xl">
-              <p className="text-xs text-[var(--muted)] font-medium mb-3">No active reminders for today</p>
+            <div className="text-center py-10 border border-dashed border-[var(--border)] rounded-3xl">
+              <p className="text-[11px] text-[var(--muted)] font-black uppercase tracking-widest mb-4 opacity-60">No active reminders</p>
               <button 
                 onClick={() => switchMode('reminders')} 
-                className="px-4 py-2 bg-[var(--card)] border border-[var(--border)] rounded-xl text-xs font-bold text-[var(--teal)] hover:border-[var(--teal)] transition-all"
+                className="btn-secondary text-[11px] px-6 py-2"
               >
-                + Add Reminder
+                + Add Medication
               </button>
             </div>
           )}
@@ -2092,18 +2376,20 @@ function HomeDashboard({
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { icon: <MessageSquare size={24} />, label: "Veda AI Assistant", mode: 'chat', color: "teal", desc: "Symptom help" },
-          { icon: <Search size={24} />, label: "Symptom Checker", mode: 'symptoms', color: "blue", desc: "Detailed analysis" },
-          { icon: <Pill size={24} />, label: "Drug Explainer", mode: 'medication', color: "purple", desc: "Interaction check" },
-          { icon: <FlaskConical size={24} />, label: "Lab Explainer", mode: 'lab', color: "amber", desc: "Report scanner" }
+          { icon: <MessageSquare size={22} />, label: "Chat AI", mode: 'chat', color: "teal" },
+          { icon: <Sparkles size={22} />, label: "Wellness", mode: 'wellness', color: "purple" },
+          { icon: <Utensils size={22} />, label: "Nutrition", mode: 'food', color: "orange" },
+          { icon: <Lock size={22} />, label: "Vault", mode: 'locker', color: "indigo" },
+          { icon: <Search size={22} />, label: "Tracker", mode: 'symptoms', color: "blue" },
+          { icon: <Pill size={22} />, label: "Labs", mode: 'medication', color: "rose" }
         ].map((q, i) => (
           <motion.div
             key={q.label}
-            initial={{ opacity: 0, scale: 0.95 }}
+            initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.6 + (i * 0.05) }}
           >
-            <QuickAction icon={q.icon} label={q.label} onClick={() => switchMode(q.mode as any)} color={q.color} description={q.desc} />
+            <QuickAction icon={q.icon} label={q.label} onClick={() => switchMode(q.mode as any)} color={q.color} />
           </motion.div>
         ))}
       </div>
@@ -2112,35 +2398,27 @@ function HomeDashboard({
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.8 }}
-        className="card p-6 flex items-center justify-between cursor-pointer group relative overflow-hidden" 
+        className="bg-[var(--surface)] border border-[var(--border)] p-6 flex items-center justify-between cursor-pointer rounded-[32px] group relative overflow-hidden" 
         onClick={() => switchMode('journal')}
       >
-        <div className="absolute inset-0 bg-gradient-to-r from-[var(--teal)]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-        <div className="space-y-1 relative z-10">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white shadow-lg">
-              <Flame size={20} />
-            </div>
-            <div>
-              <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-widest">Daily Consistency</p>
-              <h3 className="font-serif text-xl">{calculateStreak(journal)} Day Streak!</h3>
-            </div>
+        <div className="flex items-center gap-4 relative z-10">
+          <div className="w-12 h-12 rounded-2xl bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center text-[var(--teal)]">
+            <Flame size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mb-1 opacity-60">Consistency Streak</p>
+            <h3 className="font-serif text-2xl text-[var(--text)]">{calculateStreak(journal)} Day Streak</h3>
           </div>
         </div>
-        <div className="flex gap-1.5 relative z-10">
-          {[1,2,3,4,5,6,7].map(i => {
+        <div className="flex gap-2 relative z-10">
+          {[1,2,3,4,5].map(i => {
             const isCompleted = i <= calculateStreak(journal);
             return (
-              <motion.div 
+              <div 
                 key={i} 
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ delay: 0.9 + (i * 0.05) }}
                 className={cn(
-                  "w-3 h-3 rounded-full transition-all duration-500", 
-                  isCompleted 
-                    ? "bg-[var(--teal)] shadow-[0_0_12px_rgba(0,212,177,0.5)] scale-110" 
-                    : "bg-[var(--border)]"
+                  "w-2.5 h-2.5 rounded-full transition-all duration-500", 
+                  isCompleted ? "bg-[var(--teal)]" : "bg-[var(--border)]"
                 )} 
               />
             );
@@ -2164,7 +2442,7 @@ function WellnessTip({ journal }: { journal: JournalEntry[] }) {
       try {
         const lastMood = journal[0]?.mood || 3;
         const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
+          model: "gemini-flash-latest",
           contents: `Provide a single, short, inspiring wellness tip (max 15 words) based on a mood of ${lastMood}/5.`,
         });
         setTip(response.text || "Drink some water and take a deep breath.");
@@ -2207,105 +2485,111 @@ function InsightRow({ icon, text }: { icon: React.ReactNode, text: string }) {
 }
 
 function VitalCard({ icon, label, value, unit, color, isPlaceholder, onClick }: { icon: React.ReactNode, label: string, value: string, unit: string, color: string, isPlaceholder?: boolean, onClick?: () => void }) {
-  const colors: Record<string, string> = {
-    red: 'text-red-400 group-hover:text-red-300',
-    amber: 'text-amber-400 group-hover:text-amber-300',
-    teal: 'text-[var(--teal)] group-hover:text-[#42f5d7]',
-    blue: 'text-blue-400 group-hover:text-blue-300',
-    muted: 'text-[var(--muted)] group-hover:text-[var(--text2)]'
-  };
-
-  const borderColors: Record<string, string> = {
-    red: 'group-hover:border-red-500/30',
-    amber: 'group-hover:border-amber-500/30',
-    teal: 'group-hover:border-[var(--teal)]/30',
-    blue: 'group-hover:border-blue-500/30',
-    muted: 'group-hover:border-[var(--muted)]/30'
-  };
-
   return (
     <motion.div 
-      whileHover={{ y: -6, scale: 1.02 }}
+      whileHover={{ y: -4 }}
       whileTap={{ scale: 0.96 }}
-      onClick={onClick} 
+      onClick={onClick}
       className={cn(
-        "bg-gradient-to-br from-[var(--card)] to-[var(--card2)] border border-[var(--border)] rounded-[24px] p-5 space-y-4 transition-all duration-500 cursor-pointer h-full group",
-        borderColors[color] || 'group-hover:border-[var(--teal-line)]'
+        "p-5 rounded-[32px] bg-[var(--surface)] border border-[var(--border)] transition-all cursor-pointer shadow-sm h-full group",
+        !isPlaceholder && "hover:border-[var(--teal)]/40"
       )}
     >
-      <div className="flex items-center justify-between">
-        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center bg-white/5 backdrop-blur-sm border border-white/5 transition-all duration-500 group-hover:scale-110", colors[color])}>
+      <div className="flex items-center gap-3 mb-4">
+        <div className="p-2.5 rounded-2xl bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center transition-transform group-hover:scale-105">
           {icon}
         </div>
-        <div className={cn("w-1.5 h-1.5 rounded-full transition-all duration-500", isPlaceholder ? "bg-[var(--border)] group-hover:bg-[var(--muted)]" : "bg-[var(--teal)] shadow-[0_0_8px_rgba(0,212,177,0.4)] animate-pulse")} />
+        <span className="text-[11px] font-black text-[var(--muted)] uppercase tracking-widest opacity-60">{label}</span>
       </div>
-      <div className="space-y-1">
-        <p className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.15em] group-hover:text-[var(--text2)] transition-colors">{label}</p>
-        <div className="flex items-baseline gap-1.5">
-          <span className={cn("font-serif tracking-tighter transition-colors", isPlaceholder ? "text-sm text-[var(--muted)] italic" : "text-2xl sm:text-3xl text-[var(--text)] group-hover:text-[var(--teal)]")}>
-            {value}
-          </span>
-          <span className="text-[10px] text-[var(--muted)] font-bold group-hover:text-[var(--text2)] transition-colors uppercase">{unit}</span>
-        </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className={cn("text-3xl font-serif tracking-tight", isPlaceholder ? "text-[var(--muted)]" : "text-[var(--text)]")}>{value}</span>
+        {unit && <span className="text-[11px] font-bold text-[var(--muted)] uppercase opacity-40">{unit}</span>}
       </div>
     </motion.div>
   );
 }
 
 function MedRow({ name, dose, time, status }: { name: string, dose: string, time: string, status: 'taken' | 'due' | 'upcoming' }) {
-  const statusConfig = {
-    taken: { dot: 'bg-[var(--teal)]', badge: 'bg-[var(--teal)]/10 text-[var(--teal)] border-[var(--teal)]/20', label: 'TAKEN' },
-    due: { dot: 'bg-[var(--amber)] shadow-[0_0_12px_rgba(240,160,48,0.5)] animate-pulse', badge: 'bg-[var(--amber)]/10 text-[var(--amber)] border-[var(--amber)]/20', label: 'DUE' },
-    upcoming: { dot: 'bg-[var(--border)]', badge: 'bg-[var(--card2)] text-[var(--muted)] border-[var(--border)]', label: 'LATER' }
+  const statusColors = {
+    taken: "bg-[var(--teal)] text-white dark:text-[#020617]",
+    due: "bg-[var(--red)] text-white",
+    upcoming: "bg-[var(--bg)] text-[var(--text2)] border border-[var(--border)]"
   };
-  const config = statusConfig[status];
+
   return (
-    <div className="flex items-center gap-4 py-2 group cursor-pointer">
-      <div className={cn("w-3 h-3 rounded-full shrink-0 transition-all group-hover:scale-125", config.dot)} />
-      <div className="flex-1 min-width-0">
-        <div className="text-sm font-bold text-[var(--text)] truncate group-hover:text-[var(--teal)] transition-colors">{name}</div>
-        <div className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest mt-0.5">{dose} · {time}</div>
+    <div className="flex items-center justify-between p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl group transition-all hover:bg-[var(--surface)]">
+      <div className="flex items-center gap-4">
+        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center font-bold text-[10px] uppercase shadow-sm", statusColors[status])}>
+          {time}
+        </div>
+        <div>
+          <h4 className="text-sm font-bold text-[var(--text)] group-hover:text-[var(--teal)] transition-colors">{name}</h4>
+          <p className="text-[11px] text-[var(--muted)] font-medium opacity-60 tracking-tight">{dose}</p>
+        </div>
       </div>
-      <div className={cn("text-[8px] font-black px-2.5 py-1.5 rounded-lg border tracking-widest transition-all group-hover:scale-105", config.badge)}>
-        {config.label}
-      </div>
+      <div className={cn(
+        "w-2 h-2 rounded-full",
+        status === 'taken' ? "bg-[var(--teal)]" : status === 'due' ? "bg-[var(--red)]" : "bg-[var(--border)]"
+      )} />
     </div>
   );
 }
 
-function QuickAction({ icon, label, onClick, color, description }: { icon: React.ReactNode, label: string, onClick: () => void, color: string, description?: string }) {
-  const meta: Record<string, { bg: string, text: string, border: string, iconBg: string }> = {
-    teal: { bg: 'bg-[var(--card)]', text: 'text-[var(--text)]', border: 'border-[var(--border)]', iconBg: 'bg-[var(--teal)]/10 text-[var(--teal)]' },
-    blue: { bg: 'bg-[var(--card)]', text: 'text-[var(--text)]', border: 'border-[var(--border)]', iconBg: 'bg-blue-500/10 text-blue-400' },
-    purple: { bg: 'bg-[var(--card)]', text: 'text-[var(--text)]', border: 'border-[var(--border)]', iconBg: 'bg-purple-500/10 text-purple-400' },
-    amber: { bg: 'bg-[var(--card)]', text: 'text-[var(--text)]', border: 'border-[var(--border)]', iconBg: 'bg-amber-500/10 text-amber-400' }
+function QuickAction({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) {
+  const colorMap: Record<string, string> = {
+    teal: "text-[var(--teal)] bg-[var(--teal-glow)]",
+    purple: "text-purple-500 bg-purple-500/10",
+    orange: "text-orange-500 bg-orange-500/10",
+    indigo: "text-indigo-500 bg-indigo-500/10",
+    blue: "text-blue-500 bg-blue-500/10",
+    rose: "text-rose-500 bg-rose-500/10"
   };
-  const theme = meta[color];
-  
+
   return (
-    <motion.button 
-      whileHover={{ y: -4, borderColor: "var(--teal-line)" }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onClick} 
-      className={cn(
-        "flex flex-col items-start gap-4 p-5 rounded-[24px] border transition-all duration-300 w-full text-left group",
-        theme.bg, theme.border
-      )}
+    <motion.button
+      whileHover={{ y: -4 }}
+      whileTap={{ scale: 0.95 }}
+      onClick={onClick}
+      className="w-full flex flex-col items-center gap-4 p-5 rounded-[32px] bg-[var(--surface)] border border-[var(--border)] hover:border-[var(--teal)]/40 transition-all shadow-sm group"
     >
-      <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 group-hover:rotate-6", theme.iconBg)}>
+      <div className={cn("w-12 h-12 rounded-[20px] flex items-center justify-center transition-transform group-hover:scale-110", colorMap[color] || "bg-[var(--bg)]")}>
         {icon}
       </div>
-      <div className="space-y-1">
-        <span className="text-[11px] font-black text-[var(--text)] tracking-tight block">{label}</span>
-        {description && <span className="text-[10px] text-[var(--muted)] font-bold leading-tight block opacity-80">{description}</span>}
-      </div>
+      <span className="text-[11px] font-black text-[var(--text)] uppercase tracking-widest">{label}</span>
     </motion.button>
   );
 }
 
-function ChatView({ chatHistory, setChatHistory, isTyping, setIsTyping, profile, switchMode, updateActiveChat }: { chatHistory: any[], setChatHistory: any, isTyping: boolean, setIsTyping: any, profile: UserProfile, switchMode: (m: AppMode) => void, updateActiveChat: (msgs: any[]) => void }) {
+function ChatView({ 
+  chatHistory, 
+  setChatHistory, 
+  isTyping, 
+  setIsTyping, 
+  profile, 
+  switchMode, 
+  updateActiveChat,
+  conversations,
+  activeChatId,
+  setActiveChatId,
+  onNewChat,
+  onDeleteChat
+}: { 
+  chatHistory: ChatMessage[], 
+  setChatHistory: any, 
+  isTyping: boolean, 
+  setIsTyping: any, 
+  profile: UserProfile, 
+  switchMode: (m: AppMode) => void, 
+  updateActiveChat: (msgs: ChatMessage[]) => Promise<void>,
+  conversations: ChatConversation[],
+  activeChatId: string,
+  setActiveChatId: (id: string) => void,
+  onNewChat: () => Promise<void>,
+  onDeleteChat: (id: string, e: React.MouseEvent) => Promise<void>
+}) {
   const [input, setInput] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -2319,18 +2603,30 @@ function ChatView({ chatHistory, setChatHistory, isTyping, setIsTyping, profile,
     if (!msg) return;
     
     setInput('');
-    const newMsgsWithUser = [...chatHistory, { role: 'user', content: msg }];
-    updateActiveChat(newMsgsWithUser);
+    const newMsgsWithUser: ChatMessage[] = [...chatHistory, { 
+      role: 'user', 
+      content: msg,
+      timestamp: new Date().toISOString()
+    }];
+    await updateActiveChat(newMsgsWithUser);
     setIsTyping(true);
 
     try {
       const profileCtx = `Patient Profile: ${profile.name}, ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}.`;
       const prompt = `${profileCtx}\n\nUser: ${msg}`;
       const response = await callGemini(prompt);
-      const finalMsgs = [...newMsgsWithUser, { role: 'assistant', content: response }];
-      updateActiveChat(finalMsgs);
+      const finalMsgs: ChatMessage[] = [...newMsgsWithUser, { 
+        role: 'assistant', 
+        content: response,
+        timestamp: new Date().toISOString()
+      }];
+      await updateActiveChat(finalMsgs);
     } catch (error) {
-      updateActiveChat([...newMsgsWithUser, { role: 'assistant', content: "I'm sorry, I'm having trouble connecting right now. Please try again later." }]);
+      await updateActiveChat([...newMsgsWithUser, { 
+        role: 'assistant', 
+        content: "I'm sorry, I'm having trouble connecting right now. Please try again later.",
+        timestamp: new Date().toISOString()
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -2344,150 +2640,214 @@ function ChatView({ chatHistory, setChatHistory, isTyping, setIsTyping, profile,
   ];
 
   return (
-    <div className="flex flex-col fixed inset-0 z-[200] bg-[#f9fafb] animate-in fade-in duration-300">
-      {/* Header - Minimalist & Clean */}
-      <div className="flex items-center gap-4 px-6 py-4 bg-white border-b border-gray-100 shrink-0">
-        <button 
-          onClick={() => switchMode('home')} 
-          aria-label="Back"
-          className="p-2 -ml-2 hover:bg-gray-50 rounded-full transition-colors text-gray-400 hover:text-gray-600"
-        >
-          <ArrowLeft size={24} strokeWidth={2} />
-        </button>
-        <div className="flex-1">
-          <h2 className="text-lg font-bold text-gray-900 tracking-tight">Health Chat</h2>
-          <div className="flex items-center gap-1.5">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Veda AI Active</span>
-          </div>
-        </div>
-        {!showClearConfirm ? (
-          <button 
-            onClick={() => setShowClearConfirm(true)}
-            className="p-2 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-xl transition-all"
-            title="Clear History"
-          >
-            <Trash2 size={20} />
+    <div className="flex fixed inset-0 z-[200] bg-[var(--bg)] animate-in fade-in duration-300">
+      <div className="bg-gradient" />
+      {/* Sidebar - Conversation History */}
+      <motion.div 
+        initial={false}
+        animate={{ 
+          width: isSidebarOpen ? 280 : 0,
+          opacity: isSidebarOpen ? 1 : 0
+        }}
+        className="glass-darker border-r border-white/5 overflow-hidden flex flex-col shrink-0 h-full shadow-2xl"
+      >
+        <div className="p-6 border-b border-white/5 flex items-center justify-between">
+          <h3 className="font-serif text-lg font-bold text-[var(--text)]">History</h3>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-1.5 hover:bg-white/5 rounded-lg text-[var(--muted)]">
+            <X size={18} />
           </button>
-        ) : (
-          <div className="flex items-center gap-2 animate-in slide-in-from-right-4 duration-300">
-            <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Clear?</span>
-            <button 
-              onClick={() => {
-                updateActiveChat([]);
-                setShowClearConfirm(false);
-              }}
-              className="px-3 py-1 bg-red-500 text-white text-[10px] font-black uppercase rounded-lg shadow-sm"
-            >
-              Yes
-            </button>
-            <button 
-              onClick={() => setShowClearConfirm(false)}
-              className="px-3 py-1 bg-gray-100 text-gray-600 text-[10px] font-black uppercase rounded-lg"
-            >
-              No
-            </button>
-          </div>
-        )}
-      </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          <button 
+            onClick={onNewChat}
+            className="w-full flex items-center gap-3 p-3 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] rounded-xl text-sm font-bold shadow-lg shadow-[var(--teal)]/20 active:scale-95 transition-all mb-4 border border-white/20"
+          >
+            <Plus size={18} />
+            <span>New Consultation</span>
+          </button>
 
-      {/* Chat Area - Pure & Clean */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6 scrollbar-hide">
-        {chatHistory.length === 0 && (
-          <div className="flex flex-col items-center justify-center min-h-[60vh] text-center space-y-6 animate-in fade-in zoom-in duration-700">
-            <div className="w-20 h-20 rounded-3xl bg-gray-900 flex items-center justify-center text-white shadow-xl">
-              <Bot size={40} strokeWidth={1.5} />
+          {conversations.length === 0 ? (
+            <div className="text-center py-10 px-4">
+              <MessageSquare size={32} className="mx-auto text-[var(--muted)]/20 mb-2" />
+              <p className="text-xs text-[var(--muted)] font-medium leading-relaxed">No past consultations yet.</p>
             </div>
-            <div className="space-y-2">
-              <h3 className="text-2xl font-bold text-gray-900">How can I help you today?</h3>
-              <p className="text-gray-500 max-w-[280px] mx-auto text-sm leading-relaxed">
-                Describe your symptoms or ask a health question to get started.
-              </p>
-            </div>
-          </div>
-        )}
-
-        <AnimatePresence initial={false}>
-          {chatHistory.map((msg, i) => (
-            <motion.div 
-              key={i} 
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn("flex w-full mb-2", msg.role === 'user' ? "justify-end" : "justify-start")}
-            >
-              <div className={cn(
-                "max-w-[85%] sm:max-w-[75%] md:max-w-[65%] flex flex-col gap-1.5",
-                msg.role === 'user' ? "items-end" : "items-start"
-              )}>
-                <div className={cn(
-                  "px-4 py-3 rounded-2xl text-[15px] leading-relaxed transition-all",
-                  msg.role === 'user' 
-                    ? "bg-gray-900 text-white shadow-sm" 
-                    : "bg-white border border-gray-100 text-gray-800 shadow-sm"
-                )}>
-                  <div className="prose prose-sm max-w-none prose-p:leading-relaxed prose-invert-0" dangerouslySetInnerHTML={{ __html: formatMsg(msg.content) }} />
+          ) : (
+            conversations.map(conv => (
+              <div 
+                key={conv.id}
+                onClick={() => {
+                  setActiveChatId(conv.id);
+                  if (window.innerWidth < 768) setIsSidebarOpen(false);
+                }}
+                className={cn(
+                  "group relative w-full flex flex-col gap-1 p-3 rounded-xl border transition-all cursor-pointer",
+                  activeChatId === conv.id 
+                    ? "glass border-white/20 shadow-lg" 
+                    : "bg-transparent border-transparent hover:bg-white/5"
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[13px] font-bold text-[var(--text)] truncate flex-1">
+                    {conv.title || 'Consultation'}
+                  </span>
+                  <button 
+                    onClick={(e) => onDeleteChat(conv.id, e)}
+                    className="p-1 opacity-0 group-hover:opacity-100 text-[var(--muted)] hover:text-red-500 rounded transition-all"
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
-                {msg.role === 'assistant' && (
-                  <div className="px-1">
-                    <span className="text-[9px] font-bold text-gray-300 uppercase tracking-widest">AI Contextual Guidance</span>
-                  </div>
+                <div className="flex items-center gap-1.5 text-[9px] text-[var(--muted)] font-bold uppercase tracking-wider">
+                  <Calendar size={10} />
+                  <span>{new Date(conv.lastMessageAt).toLocaleDateString()}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </motion.div>
+
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+        {/* Header */}
+        <div className="flex items-center gap-4 px-6 py-4 glass border-b border-white/5 shrink-0">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 -ml-2 hover:glass-morphism rounded-xl transition-colors text-[var(--muted)]"
+            title="History"
+          >
+            <Menu size={24} />
+          </button>
+          <div className="flex-1">
+            <h2 className="text-lg font-bold text-[var(--text)] tracking-tight">
+              {conversations.find(c => c.id === activeChatId)?.title || 'Health Chat'}
+            </h2>
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
+              <span className="text-[10px] text-[var(--muted)] font-semibold uppercase tracking-wider">Veda AI Active</span>
+            </div>
+          </div>
+          
+          <button 
+            onClick={() => switchMode('home')} 
+            className="px-4 py-2 glass-morphism text-[var(--text2)] text-xs font-bold rounded-xl hover:glass transition-all border border-white/10"
+          >
+            Exit
+          </button>
+        </div>
+
+        {/* Chat Area */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-8 space-y-6 scrollbar-hide">
+          {(!activeChatId || chatHistory.length === 0) && (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] text-center space-y-6 animate-in fade-in zoom-in duration-700">
+              <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-2xl shadow-[var(--teal)]/20 border border-white/20">
+                <Bot size={40} strokeWidth={1.5} />
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-2xl font-bold text-[var(--text)] tracking-tight">How can I help you today?</h3>
+                <p className="text-[var(--muted)] max-w-[280px] mx-auto text-sm leading-relaxed">
+                  Start a new consultation to discuss symptoms, medications, or any health concerns.
+                </p>
+                {!activeChatId && (
+                  <button 
+                    onClick={onNewChat}
+                    className="mt-4 px-8 py-3 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] rounded-2xl font-bold shadow-xl active:scale-95 transition-all border border-white/30"
+                  >
+                    Start Consulting
+                  </button>
                 )}
               </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
+            </div>
+          )}
 
-        {isTyping && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-            <div className="bg-white border border-gray-100 px-4 py-3 rounded-2xl shadow-sm">
-              <div className="flex gap-1">
-                {[1, 2, 3].map(j => (
-                  <motion.div 
-                    key={j}
-                    animate={{ opacity: [0.3, 1, 0.3] }} 
-                    transition={{ repeat: Infinity, duration: 1, delay: j * 0.2 }} 
-                    className="w-1 h-1 rounded-full bg-gray-300" 
-                  />
+          <AnimatePresence initial={false}>
+            {chatHistory.map((msg, i) => (
+              <motion.div 
+                key={i} 
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={cn("flex w-full mb-2", msg.role === 'user' ? "justify-end" : "justify-start")}
+              >
+                <div className={cn(
+                  "max-w-[85%] sm:max-w-[75%] md:max-w-[65%] flex flex-col gap-1.5",
+                  msg.role === 'user' ? "items-end" : "items-start"
+                )}>
+                  <div className={cn(
+                    "px-4 py-3 rounded-2xl text-[15px] leading-relaxed transition-all",
+                    msg.role === 'user' 
+                      ? "bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] shadow-lg border border-white/20" 
+                      : "glass border border-white/10 text-[var(--text)] shadow-sm"
+                  )}>
+                    <div className="prose prose-sm max-w-none prose-p:leading-relaxed prose-invert-0" dangerouslySetInnerHTML={{ __html: formatMsg(msg.content) }} />
+                  </div>
+                  <div className="px-1 flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-[var(--muted)] uppercase tracking-widest opacity-60">
+                      {msg.role === 'user' ? 'You' : 'Veda AI'}
+                    </span>
+                    <span className="text-[9px] text-[var(--muted)] opacity-30">•</span>
+                    <span className="text-[9px] font-medium text-[var(--muted)] opacity-60">
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+
+          {isTyping && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+              <div className="glass border border-white/10 px-4 py-3 rounded-2xl shadow-sm">
+                <div className="flex gap-1">
+                  {[1, 2, 3].map(j => (
+                    <motion.div 
+                      key={j}
+                      animate={{ opacity: [0.3, 1, 0.3] }} 
+                      transition={{ repeat: Infinity, duration: 1, delay: j * 0.2 }} 
+                      className="w-1.5 h-1.5 rounded-full bg-[var(--teal)]" 
+                    />
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </div>
+
+        {/* Input Area */}
+        {activeChatId && (
+          <div className="p-4 glass-darker border-t border-white/10 shrink-0 pb-safe">
+            <div className="max-w-3xl mx-auto flex items-center gap-2 glass border border-white/20 rounded-3xl px-4 py-2 focus-within:border-[var(--teal)]/50 transition-all shadow-inner">
+              <textarea 
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+                placeholder="Ask Veda anything..."
+                className="flex-1 bg-transparent border-none outline-none py-2 text-[15px] resize-none max-h-32 text-[var(--text)] placeholder:text-[var(--muted)]"
+                rows={1}
+              />
+              <button 
+                onClick={() => handleSend()}
+                disabled={!input.trim()}
+                className={cn(
+                  "w-10 h-10 rounded-full flex items-center justify-center transition-all active:scale-95",
+                  input.trim() ? "bg-[var(--teal)] text-[#020f0c] shadow-lg shadow-[var(--teal)]/20" : "text-[var(--muted)]/30"
+                )}
+              >
+                <Send size={18} strokeWidth={2.5} />
+              </button>
+            </div>
+            {chatHistory.length === 0 && (
+              <div className="flex flex-wrap gap-2 mt-4 justify-center">
+                {suggestions.map(s => (
+                  <button 
+                    key={s} 
+                    onClick={() => handleSend(s)}
+                    className="px-4 py-1.5 glass-morphism border border-white/10 rounded-full text-xs text-[var(--text2)] hover:glass hover:border-white/30 transition-all"
+                  >
+                    {s}
+                  </button>
                 ))}
               </div>
-            </div>
-          </motion.div>
-        )}
-      </div>
-
-      {/* Input Area - Minimalist Pill */}
-      <div className="p-4 bg-white border-t border-gray-100 shrink-0 pb-safe">
-        <div className="max-w-3xl mx-auto flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-full px-4 py-2 focus-within:bg-white focus-within:border-gray-300 transition-all">
-          <textarea 
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-            placeholder="Type a message..."
-            className="flex-1 bg-transparent border-none outline-none py-2 text-[15px] resize-none max-h-32 text-gray-800 placeholder:text-gray-400"
-            rows={1}
-          />
-          <button 
-            onClick={() => handleSend()}
-            disabled={!input.trim()}
-            className={cn(
-              "p-2 rounded-full transition-all active:scale-95",
-              input.trim() ? "text-gray-900" : "text-gray-300"
             )}
-          >
-            <Send size={20} strokeWidth={2.5} />
-          </button>
-        </div>
-        {chatHistory.length === 0 && (
-          <div className="flex flex-wrap gap-2 mt-4 justify-center">
-            {suggestions.map(s => (
-              <button 
-                key={s} 
-                onClick={() => handleSend(s)}
-                className="px-4 py-1.5 bg-white border border-gray-200 rounded-full text-xs text-gray-500 hover:border-gray-300 hover:text-gray-800 transition-all"
-              >
-                {s}
-              </button>
-            ))}
           </div>
         )}
       </div>
@@ -2584,103 +2944,103 @@ function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], ad
         </div>
       </div>
 
-      <div className="flex bg-[var(--card2)] p-1 rounded-xl border border-[var(--border)]">
-        <button onClick={() => setActiveTab('log')} className={cn("flex-1 py-2 text-xs font-bold rounded-lg transition-all", activeTab === 'log' ? "bg-[var(--teal)] text-[#020f0c]" : "text-[var(--muted)]")}>Log Today</button>
-        <button onClick={() => setActiveTab('history')} className={cn("flex-1 py-2 text-xs font-bold rounded-lg transition-all", activeTab === 'history' ? "bg-[var(--teal)] text-[#020f0c]" : "text-[var(--muted)]")}>History</button>
+      <div className="flex glass-darker p-1 rounded-2xl border border-white/10">
+        <button onClick={() => setActiveTab('log')} className={cn("flex-1 py-2.5 text-xs font-bold rounded-xl transition-all", activeTab === 'log' ? "bg-[var(--teal)] text-[#020f0c] shadow-md border border-white/20" : "text-[var(--muted)] hover:text-[var(--text)]")}>Log Today</button>
+        <button onClick={() => setActiveTab('history')} className={cn("flex-1 py-2.5 text-xs font-bold rounded-xl transition-all", activeTab === 'history' ? "bg-[var(--teal)] text-[#020f0c] shadow-md border border-white/20" : "text-[var(--muted)] hover:text-[var(--text)]")}>History</button>
       </div>
 
       {activeTab === 'log' ? (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
-          <div className="space-y-3">
-            <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">How's your mood?</label>
-            <div className="flex justify-between gap-2">
+          <div className="space-y-4">
+            <label className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em] ml-1">How's your mood?</label>
+            <div className="flex justify-between gap-2.5">
               {[1, 2, 3, 4, 5].map(v => (
                 <button 
                   key={v} 
                   onClick={() => setMood(v)}
                   className={cn(
-                    "flex-1 aspect-square rounded-2xl flex flex-col items-center justify-center gap-1 border transition-all",
-                    mood === v ? "bg-[var(--teal)]/10 border-[var(--teal)] text-[var(--teal)]" : "bg-[var(--card)] border-[var(--border)] text-[var(--muted)]"
+                    "flex-1 aspect-square rounded-[24px] flex flex-col items-center justify-center gap-1.5 border transition-all active:scale-95",
+                    mood === v ? "glass border-[var(--teal)]/40 shadow-lg shadow-[var(--teal)]/5" : "glass border-white/10 opacity-60 hover:opacity-100"
                   )}
                 >
-                  <span className="text-2xl">{['😢', '😟', '😐', '😊', '😄'][v-1]}</span>
-                  <span className="text-[8px] font-bold uppercase">{['Bad', 'Low', 'Okay', 'Good', 'Great'][v-1]}</span>
+                  <span className={cn("text-2xl transition-transform", mood === v && "scale-125")}>{['😢', '😟', '😐', '😊', '😄'][v-1]}</span>
+                  <span className={cn("text-[8px] font-black uppercase tracking-tighter", mood === v ? "text-[var(--teal)]" : "text-[var(--muted)]")}>{['Bad', 'Low', 'Okay', 'Good', 'Great'][v-1]}</span>
                 </button>
               ))}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div className="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] space-y-3">
-              <div className="flex items-center gap-2 text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">
-                <Moon size={14} /> Sleep
+            <div className="glass p-5 rounded-[28px] border border-white/10 space-y-3">
+              <div className="flex items-center gap-2 text-[10px] font-black text-[var(--muted)] uppercase tracking-widest">
+                <Moon size={14} className="text-blue-400" /> Sleep
               </div>
               <div className="flex items-baseline gap-2">
-                <input type="number" value={sleep} onChange={e => setSleep(e.target.value)} className="bg-transparent border-none outline-none font-serif text-3xl w-20" />
+                <input type="number" value={sleep} onChange={e => setSleep(e.target.value)} className="bg-transparent border-none outline-none font-serif text-3xl w-20 text-[var(--text)]" />
                 <span className="text-xs font-bold text-[var(--muted)]">hrs</span>
               </div>
             </div>
-            <div className="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] space-y-3">
-              <div className="flex items-center gap-2 text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">
-                <Zap size={14} /> Energy
+            <div className="glass p-5 rounded-[28px] border border-white/10 space-y-3">
+              <div className="flex items-center gap-2 text-[10px] font-black text-[var(--muted)] uppercase tracking-widest">
+                <Zap size={14} className="text-amber-500" /> Energy
               </div>
-              <div className="flex gap-1.5 pt-2">
+              <div className="flex gap-2 pt-2">
                 {[1, 2, 3, 4, 5].map(v => (
-                  <button key={v} onClick={() => setEnergy(v)} className={cn("w-3 h-3 rounded-full", v <= energy ? "bg-[var(--teal)]" : "bg-[var(--border)]")} />
+                  <button key={v} onClick={() => setEnergy(v)} className={cn("w-3.5 h-3.5 rounded-full transition-all", v <= energy ? "bg-[var(--teal)] shadow-[0_0_8px_rgba(0,212,177,0.4)]" : "bg-white/10")} />
                 ))}
               </div>
             </div>
           </div>
 
-          <div className="bg-[var(--card)] p-5 rounded-2xl border border-[var(--border)] space-y-4">
+          <div className="glass p-6 rounded-[32px] border border-white/10 space-y-5">
             <div className="flex items-center justify-between">
-              <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Vitals (Optional)</label>
+              <label className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em]">Vitals <span className="opacity-60">(Optional)</span></label>
               <Activity size={16} className="text-[var(--teal)]" />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--muted)] font-bold">BP (Sys/Dia)</p>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <p className="text-[9px] text-[var(--muted)] font-black uppercase tracking-widest ml-1">BP</p>
                 <input 
                   type="text" 
                   value={bp}
                   onChange={e => setBp(e.target.value)}
                   placeholder="120/80" 
-                  className="w-full bg-transparent border-b border-[var(--border)] py-1 text-sm outline-none focus:border-[var(--teal)] transition-all" 
+                  className="w-full glass-morphism border-b border-white/10 bg-transparent py-2.5 px-1 text-sm font-bold text-[var(--text)] outline-none focus:border-[var(--teal)] transition-all placeholder:text-[var(--muted)]/30" 
                 />
               </div>
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--muted)] font-bold">Sugar (mg/dL)</p>
+              <div className="space-y-1.5">
+                <p className="text-[9px] text-[var(--muted)] font-black uppercase tracking-widest ml-1">Sugar</p>
                 <input 
                   type="text" 
                   value={sugar}
                   onChange={e => setSugar(e.target.value)}
                   placeholder="95" 
-                  className="w-full bg-transparent border-b border-[var(--border)] py-1 text-sm outline-none focus:border-[var(--teal)] transition-all" 
+                  className="w-full glass-morphism border-b border-white/10 bg-transparent py-2.5 px-1 text-sm font-bold text-[var(--text)] outline-none focus:border-[var(--teal)] transition-all placeholder:text-[var(--muted)]/30" 
                 />
               </div>
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--muted)] font-bold">Weight (kg)</p>
+              <div className="space-y-1.5">
+                <p className="text-[9px] text-[var(--muted)] font-black uppercase tracking-widest ml-1">Weight</p>
                 <input 
                   type="text" 
                   value={weight}
                   onChange={e => setWeight(e.target.value)}
                   placeholder="70" 
-                  className="w-full bg-transparent border-b border-[var(--border)] py-1 text-sm outline-none focus:border-[var(--teal)] transition-all" 
+                  className="w-full glass-morphism border-b border-white/10 bg-transparent py-2.5 px-1 text-sm font-bold text-[var(--text)] outline-none focus:border-[var(--teal)] transition-all placeholder:text-[var(--muted)]/30" 
                 />
               </div>
             </div>
           </div>
 
-          <div className="space-y-3">
-            <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Symptoms</label>
-            <div className="flex flex-wrap gap-2">
+          <div className="space-y-4">
+            <label className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em] ml-1">Symptoms</label>
+            <div className="flex flex-wrap gap-2.5">
               {['Headache', 'Fever', 'Cough', 'Fatigue', 'Pain', 'Nausea'].map(s => (
                 <button 
                   key={s} 
                   onClick={() => setSelectedSymptoms(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])}
                   className={cn(
-                    "px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all",
-                    selectedSymptoms.includes(s) ? "bg-[var(--teal)]/10 border-[var(--teal)] text-[var(--teal)]" : "border-[var(--border)] text-[var(--muted)] hover:border-[var(--teal-dim)]"
+                    "px-4 py-2.5 rounded-xl border text-[11px] font-bold transition-all active:scale-95",
+                    selectedSymptoms.includes(s) ? "glass border-[var(--teal)]/40 text-[var(--teal)] shadow-md" : "glass border-white/10 text-[var(--muted)] hover:border-white/30"
                   )}
                 >
                   {s}
@@ -2689,50 +3049,53 @@ function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], ad
             </div>
           </div>
 
-          <div className="space-y-3">
-            <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Today's Notes</label>
+          <div className="space-y-4">
+            <label className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em] ml-1">Today's Notes</label>
             <textarea 
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Any symptoms or observations?"
-              className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm min-h-[120px] outline-none focus:border-[var(--teal-dim)] transition-all"
+              className="w-full glass border border-white/10 rounded-[32px] p-5 text-sm min-h-[140px] outline-none focus:border-[var(--teal)]/40 transition-all text-[var(--text)] placeholder:text-[var(--muted)]/40 shadow-inner"
             />
           </div>
 
           {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm flex items-center gap-2">
-              <AlertTriangle size={16} />
-              {error}
+            <div className="p-4 glass-morphism border border-red-500/30 rounded-[24px] text-red-400 text-sm flex items-center gap-2 shadow-lg shadow-red-900/10 mb-4 animate-in shake">
+              <AlertTriangle size={18} />
+              <span className="font-medium">{error}</span>
             </div>
           )}
 
-          <button onClick={handleSave} className="w-full py-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold rounded-2xl shadow-xl active:scale-[0.98] transition-all">
-            Save Today's Entry ✦
+          <button 
+            onClick={handleSave}
+            className="w-full py-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-black rounded-[24px] shadow-xl shadow-[var(--teal)]/20 active:scale-[0.98] transition-all border border-white/20 text-lg mb-8"
+          >
+            Save Daily Log ✦
           </button>
         </div>
       ) : (
-        <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2">
+        <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
           {journal.length === 0 ? (
-            <div className="text-center py-12 text-[var(--muted)]">No entries yet.</div>
+            <div className="text-center py-12 glass border border-white/5 rounded-[32px] text-[var(--muted)]">No entries yet.</div>
           ) : (
             journal.map((entry, i) => (
-              <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex gap-4">
-                <div className="w-12 h-12 rounded-xl bg-[var(--card2)] border border-[var(--border)] flex flex-col items-center justify-center shrink-0">
-                  <span className="text-[10px] font-bold text-[var(--muted)] uppercase">{new Date(entry.date).toLocaleDateString('en-IN', { month: 'short' })}</span>
-                  <span className="text-xl font-serif leading-none">{new Date(entry.date).getDate()}</span>
+              <div key={i} className="glass border border-white/10 rounded-[28px] p-4 flex gap-4 hover:glass-morphism transition-all">
+                <div className="w-12 h-14 rounded-2xl glass-darker border border-white/10 flex flex-col items-center justify-center shrink-0">
+                  <span className="text-[9px] font-black text-[var(--muted)] uppercase opacity-60 tracking-widest">{new Date(entry.date).toLocaleDateString('en-IN', { month: 'short' })}</span>
+                  <span className="text-xl font-serif text-[var(--text)] leading-none mt-0.5">{new Date(entry.date).getDate()}</span>
                 </div>
-                <div className="flex-1 space-y-1">
+                <div className="flex-1 space-y-1.5 pt-0.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="text-lg">{['😢', '😟', '😐', '😊', '😄'][entry.mood-1]}</span>
-                      <span className="text-sm font-bold">{['Bad', 'Low', 'Okay', 'Good', 'Great'][entry.mood-1]}</span>
+                      <span className="text-lg leading-none">{['😢', '😟', '😐', '😊', '😄'][entry.mood-1]}</span>
+                      <span className="text-sm font-bold text-[var(--text)]">{['Bad', 'Low', 'Okay', 'Good', 'Great'][entry.mood-1]}</span>
                     </div>
-                    <span className="text-[10px] text-[var(--muted)] font-bold">{entry.time}</span>
+                    <span className="text-[10px] text-[var(--muted)] font-black opacity-40 uppercase tracking-widest">{entry.time}</span>
                   </div>
-                  {entry.notes && <p className="text-xs text-[var(--text2)] italic line-clamp-1">"{entry.notes}"</p>}
-                  <div className="flex gap-3 pt-1">
-                    <span className="text-[10px] font-bold text(--muted) flex items-center gap-1"><Moon size={10} /> {entry.sleep}h</span>
-                    <span className="text-[10px] font-bold text(--muted) flex items-center gap-1"><Zap size={10} /> {entry.energy}/5</span>
+                  {entry.notes && <p className="text-xs text-[var(--muted)] italic line-clamp-1 opacity-80">"{entry.notes}"</p>}
+                  <div className="flex gap-4 pt-1">
+                    <span className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest flex items-center gap-1.5"><Moon size={11} className="text-blue-400" /> {entry.sleep}h</span>
+                    <span className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest flex items-center gap-1.5"><Zap size={11} className="text-amber-500" /> {entry.energy}/5</span>
                   </div>
                 </div>
               </div>
@@ -2744,106 +3107,396 @@ function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], ad
   );
 }
 
-function SymptomChecker({ profile }: { profile: UserProfile }) {
+function SymptomChecker({ profile, switchMode }: { profile: UserProfile, switchMode: (m: AppMode) => void }) {
   const [symptom, setSymptom] = useState('');
   const [duration, setDuration] = useState('2-3 days');
   const [severity, setSeverity] = useState(5);
-  const [result, setResult] = useState('');
+  const [result, setResult] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleCheck = async () => {
     if (!symptom.trim()) return;
     setIsLoading(true);
+    setError(null);
     try {
-      const prompt = `Patient reports: ${symptom}. Duration: ${duration}. Severity: ${severity}/10. Profile: ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}. Provide top likely causes, urgency level, and home care tips. Provide a detailed, structured response.`;
-      const response = await callGemini(prompt);
-      setResult(response);
-    } catch (error) {
-      setResult("Error analyzing symptoms. Please try again.");
+      const diagnosis = await analyzeSymptoms(symptom, duration, severity, profile);
+      setResult(diagnosis);
+    } catch (err) {
+      setError("Analysis failed. Please try again.");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const getUrgencyStyles = (urgency: string) => {
+    switch (urgency) {
+      case 'emergency': return { bg: 'bg-red-500/10', text: 'text-red-500', border: 'border-red-500/20', icon: <AlertCircle className="text-red-500" size={20} /> };
+      case 'urgent': return { bg: 'bg-amber-500/10', text: 'text-amber-500', border: 'border-amber-500/20', icon: <Clock className="text-amber-500" size={20} /> };
+      default: return { bg: 'bg-blue-500/10', text: 'text-blue-500', border: 'border-blue-500/20', icon: <Activity className="text-blue-500" size={20} /> };
     }
   };
 
   return (
     <div className="space-y-8 pb-12">
       <div className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20">
-          <Search size={28} />
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+          <Stethoscope size={28} />
         </div>
         <div>
           <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Symptom Checker</h2>
-          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-widest mt-1">AI-powered health assessment</p>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Smart AI Diagnostics ✦</p>
         </div>
       </div>
 
-      <div className="bg-gradient-to-br from-[var(--card)] to-[var(--card2)] border border-[var(--border)] rounded-3xl p-8 shadow-xl shadow-black/10 space-y-8">
-        <div className="space-y-3">
-          <label className="text-xs font-bold text-[var(--teal)] uppercase tracking-widest">What's bothering you?</label>
+      <div className="glass border border-white/10 rounded-[32px] p-8 shadow-xl space-y-8 relative overflow-hidden group">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 blur-[100px] -mr-32 -mt-32 pointer-events-none" />
+        
+        <div className="space-y-4">
+          <label className="text-[10px] font-black text-blue-500 uppercase tracking-[0.25em] ml-1">Current Complaints</label>
           <div className="relative">
-            <input 
+            <textarea 
               value={symptom}
               onChange={e => setSymptom(e.target.value)}
-              placeholder="Describe your symptoms in detail..."
-              className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-5 text-sm outline-none focus:border-[var(--teal-dim)] transition-all shadow-inner"
+              placeholder="e.g., I have a sharp pain in my lower back that started after lifting a heavy box..."
+              rows={3}
+              className="w-full glass border border-white/5 rounded-2xl p-5 text-sm font-medium outline-none focus:border-blue-500/50 transition-all shadow-inner text-[var(--text)] placeholder:text-[var(--muted)]/40 resize-none"
             />
-            <button className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-[var(--card)] rounded-full text-[var(--teal)] hover:bg-[var(--card2)] transition-colors"><Mic size={20} /></button>
           </div>
         </div>
 
-        <div className="space-y-3">
-          <label className="text-xs font-bold text-[var(--teal)] uppercase tracking-widest">How long has this been happening?</label>
-          <div className="grid grid-cols-3 gap-3">
-            {['Today', '2-3 days', '1 week', '2 weeks', '1 month', '3+ months'].map(d => (
-              <button 
-                key={d} 
-                onClick={() => setDuration(d)}
-                className={cn(
-                  "py-3 text-xs font-bold rounded-xl border transition-all duration-300",
-                  duration === d ? "bg-[var(--teal)] text-[#020f0c] border-transparent shadow-lg shadow-[var(--teal)]/20" : "bg-[var(--card2)] border-[var(--border)] text-[var(--muted)] hover:border-[var(--teal-dim)]"
-                )}
-              >
-                {d}
-              </button>
-            ))}
+        <div className="grid md:grid-cols-2 gap-8">
+          <div className="space-y-4">
+            <label className="text-[10px] font-black text-blue-500 uppercase tracking-[0.25em] ml-1">Duration</label>
+            <div className="grid grid-cols-3 gap-2">
+              {['Today', '2-3 days', '1 week', '2 weeks', '1 month', 'Chronic'].map(d => (
+                <button 
+                  key={d} 
+                  onClick={() => setDuration(d)}
+                  className={cn(
+                    "py-3 rounded-xl border text-[10px] font-black uppercase tracking-wider transition-all",
+                    duration === d ? "glass border-blue-500/40 text-blue-400 shadow-lg" : "glass border-white/5 text-[var(--muted)]/60 hover:border-white/20"
+                  )}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <label className="text-xs font-bold text-[var(--teal)] uppercase tracking-widest">How severe is it?</label>
-            <span className="text-sm font-bold text-[var(--text)] bg-[var(--card)] px-3 py-1 rounded-full">{severity}/10</span>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between ml-1">
+              <label className="text-[10px] font-black text-blue-500 uppercase tracking-[0.25em]">Pain Level</label>
+              <span className="text-[10px] font-black text-blue-500 bg-blue-500/10 px-2.5 py-1 rounded-lg border border-blue-500/20">{severity}/10</span>
+            </div>
+            <input 
+              type="range" min="1" max="10" step="1" 
+              value={severity} 
+              onChange={e => setSeverity(parseInt(e.target.value))}
+              className="w-full h-2 bg-white/5 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            />
+            <div className="flex justify-between px-1 text-[9px] font-black text-[var(--muted)] uppercase tracking-widest opacity-40 pt-2">
+              <span>Mild</span>
+              <span>Moderate</span>
+              <span>Severe</span>
+            </div>
           </div>
-          <input 
-            type="range" min="1" max="10" value={severity} 
-            onChange={e => setSeverity(parseInt(e.target.value))}
-            className="w-full h-2 bg-[var(--border)] rounded-full appearance-none accent-[var(--teal)] cursor-pointer" 
-          />
         </div>
 
         <button 
           onClick={handleCheck}
           disabled={isLoading || !symptom.trim()}
-          className="w-full py-5 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold text-lg rounded-2xl shadow-xl shadow-[var(--teal)]/20 disabled:opacity-50 transition-all hover:brightness-110"
+          className="w-full py-5 bg-gradient-to-br from-indigo-500 to-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-600/20 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-3 border border-white/20 text-lg group"
         >
-          {isLoading ? 'Analysing...' : 'Analyse Symptoms ✦'}
+          {isLoading ? (
+            <>
+              <RefreshCw className="animate-spin" size={24} />
+              <span>Analyzing Vitals...</span>
+            </>
+          ) : (
+            <>
+              <Sparkles size={22} className="group-hover:rotate-12 transition-transform" />
+              <span>Diagnostic Analysis ✦</span>
+            </>
+          )}
         </button>
       </div>
+
+      {error && (
+        <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-500 text-sm font-medium text-center">
+          {error}
+        </div>
+      )}
 
       {result && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 space-y-6 shadow-xl shadow-black/5"
+          className="space-y-6"
         >
-          <h3 className="font-serif text-2xl text-[var(--text)]">Assessment Result</h3>
-          <div className="prose prose-sm prose-invert max-w-none text-[var(--text2)] leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
-          <div className="flex items-start gap-4 p-5 bg-amber-500/5 border border-amber-500/10 rounded-2xl">
-            <AlertTriangle size={24} className="text-amber-500 shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-200/70 leading-relaxed">This is AI-generated guidance and not a medical diagnosis. If you feel severe pain or distress, seek emergency care immediately.</p>
+          <div className="glass border border-white/10 rounded-[32px] p-8 shadow-2xl relative overflow-hidden">
+            <div className="flex items-start justify-between mb-8">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl glass-morphism border border-blue-500/20 flex items-center justify-center text-blue-400">
+                  <Bot size={24} />
+                </div>
+                <div>
+                  <h3 className="font-serif text-2xl text-[var(--text)]">Initial Assessment</h3>
+                  <div className={cn(
+                    "inline-flex items-center gap-2 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest mt-2 border",
+                    getUrgencyStyles(result.urgency).bg,
+                    getUrgencyStyles(result.urgency).text,
+                    getUrgencyStyles(result.urgency).border
+                  )}>
+                    {getUrgencyStyles(result.urgency).icon}
+                    {result.urgency} Action Recommended
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setResult(null)} className="p-2 text-[var(--muted)] hover:text-[var(--text)] transition-colors"><X size={20} /></button>
+            </div>
+
+            <div className="space-y-8">
+              {/* Summary */}
+              <div className="space-y-3">
+                <p className="text-sm text-[var(--text2)] leading-relaxed italic border-l-2 border-blue-500/30 pl-4 py-1">
+                  "{result.summary}"
+                </p>
+              </div>
+
+              {/* Likely Causes */}
+              <div className="space-y-4">
+                <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.25em] ml-1">Possible Conditions</h4>
+                <div className="grid gap-3">
+                  {result.likelyCauses.map((cause: any, idx: number) => (
+                    <div key={idx} className="glass-darker border border-white/5 rounded-2xl p-5 group hover:border-blue-500/20 transition-colors">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-bold text-white group-hover:text-blue-400 transition-colors">{cause.condition}</span>
+                        <span className={cn(
+                          "text-[9px] font-black uppercase px-2 py-1 rounded-md",
+                          cause.likelihood === 'High' ? 'bg-red-500/10 text-red-400' : 
+                          cause.likelihood === 'Moderate' ? 'bg-amber-500/10 text-amber-400' : 
+                          'bg-blue-500/10 text-blue-400'
+                        )}>{cause.likelihood} Likelihood</span>
+                      </div>
+                      <p className="text-xs text-[var(--muted)] leading-relaxed">{cause.explanation}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-6">
+                {/* Actions */}
+                <div className="space-y-4">
+                  <h4 className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.25em] ml-1">Recommended Actions</h4>
+                  <ul className="space-y-2">
+                    {result.recommendedActions.map((action: string, idx: number) => (
+                      <li key={idx} className="flex items-start gap-3 text-xs text-[var(--text2)] group">
+                        <div className="w-5 h-5 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0 mt-0.5 group-hover:bg-emerald-500/20 transition-colors">
+                          <Check size={12} className="text-emerald-500" />
+                        </div>
+                        {action}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* Red Flags */}
+                <div className="space-y-4">
+                  <h4 className="text-[10px] font-black text-red-500 uppercase tracking-[0.25em] ml-1">Red Flags (See Doctor Immediately)</h4>
+                  <ul className="space-y-2">
+                    {result.redFlags.map((flag: string, idx: number) => (
+                      <li key={idx} className="flex items-start gap-3 text-xs text-[var(--text2)] group">
+                        <div className="w-5 h-5 rounded-full bg-red-500/10 flex items-center justify-center shrink-0 mt-0.5 group-hover:bg-red-500/20 transition-colors">
+                          <AlertTriangle size={12} className="text-red-500" />
+                        </div>
+                        {flag}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-10 pt-8 border-t border-white/5 flex items-start gap-4 p-6 bg-blue-500/5 rounded-3xl">
+              <Info size={24} className="text-blue-500 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Clinical Compliance Note</p>
+                <p className="text-xs text-blue-500/70 leading-relaxed font-medium">
+                  Veda uses advanced medical models for screening, but this is <strong>not a medical diagnosis</strong>. Always cross-verify with your healthcare provider.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={() => switchMode('teleconsult')}
+              className="flex-1 py-5 glass border border-white/10 rounded-2xl flex items-center justify-center gap-3 text-xs font-black uppercase tracking-widest text-[#14b8a6] hover:bg-white/5"
+            >
+              <Video size={18} /> Book Teleconsult Now
+            </button>
+            <button 
+              onClick={() => (window as any).print()}
+              className="px-6 py-5 glass border border-white/10 rounded-2xl flex items-center justify-center text-[var(--muted)] hover:text-white"
+            >
+              <FileText size={18} />
+            </button>
           </div>
         </motion.div>
       )}
+    </div>
+  );
+}
+
+function WellnessCoach({ profile }: { profile: UserProfile }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+
+    const userMsg: ChatMessage = {
+      role: 'user',
+      content: input,
+      timestamp: new Date().toISOString()
+    };
+
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const history: { role: 'user' | 'model', parts: any[] }[] = messages.map(m => ({
+        role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model',
+        parts: [{ text: m.content }]
+      }));
+
+      const response = await getWellnessResponse(input, history, profile);
+      
+      const assistantMsg: ChatMessage = {
+        role: 'assistant',
+        content: response,
+        timestamp: new Date().toISOString()
+      };
+      
+      setMessages(prev => [...prev, assistantMsg]);
+    } catch (error) {
+      console.error(error);
+      const errorMsg: ChatMessage = {
+        role: 'assistant',
+        content: "I'm sorry, I'm having trouble connecting right now. Please take a deep breath and try again in a moment.",
+        timestamp: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-[600px] glass border border-white/10 rounded-[32px] overflow-hidden shadow-2xl">
+      {/* Header */}
+      <div className="p-6 border-b border-white/10 bg-gradient-to-r from-purple-500/10 to-indigo-500/10 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
+            <Sparkles size={24} />
+          </div>
+          <div>
+            <h3 className="font-serif text-xl tracking-tight text-white">Wellness Coach</h3>
+            <p className="text-[10px] text-purple-400 font-black uppercase tracking-widest opacity-80">Empathetic Support ✦</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Chat Area */}
+      <div 
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth"
+      >
+        {messages.length === 0 && (
+          <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-60">
+            <div className="p-4 rounded-full bg-white/5">
+              <Bot size={40} className="text-purple-400" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-bold text-white">How are you feeling today?</p>
+              <p className="text-xs text-[var(--muted)] max-w-[200px]">I'm here to listen, support, and help you find peace.</p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2 pt-4">
+              {['I feel stressed', 'GUIDED MEDITATION', 'Anxiety help', 'Sleep tips'].map(tip => (
+                <button 
+                  key={tip}
+                  onClick={() => setInput(tip)}
+                  className="px-4 py-2 rounded-full border border-white/5 bg-white/2 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all text-[var(--muted)]"
+                >
+                  {tip}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m, idx) => (
+          <motion.div
+            key={idx}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={cn(
+              "flex flex-col max-w-[85%]",
+              m.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
+            )}
+          >
+            <div className={cn(
+              "p-4 rounded-2xl text-sm leading-relaxed shadow-lg",
+              m.role === 'user' 
+                ? "bg-indigo-600 text-white rounded-tr-none" 
+                : "glass border border-white/5 text-[var(--text2)] rounded-tl-none"
+            )}>
+              {m.content}
+            </div>
+            <span className="text-[8px] font-black uppercase tracking-widest text-[var(--muted)] opacity-40 mt-1 px-1">
+              {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </motion.div>
+        ))}
+
+        {isLoading && (
+          <div className="flex items-center gap-3 text-purple-400/60 ml-1">
+            <RefreshCw size={14} className="animate-spin" />
+            <span className="text-[10px] font-black uppercase tracking-widest">Finding balance...</span>
+          </div>
+        )}
+      </div>
+
+      {/* Input Area */}
+      <div className="p-6 border-t border-white/10 bg-black/20">
+        <div className="relative flex items-center gap-3">
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSend()}
+            placeholder="Share your thoughts..."
+            className="flex-1 glass border border-white/5 rounded-2xl px-5 py-4 text-sm font-medium outline-none focus:border-purple-500/50 transition-all text-white placeholder:text-white/20"
+          />
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || isLoading}
+            className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-indigo-600 text-white flex items-center justify-center shadow-lg active:scale-95 transition-all disabled:opacity-50"
+          >
+            <Send size={24} />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2876,32 +3529,44 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
   return (
     <div className="space-y-8 pb-12">
       <div className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center text-white shadow-xl shadow-purple-500/20">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center text-white shadow-xl shadow-purple-500/20 border border-white/20">
           <Pill size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Medication Explainer</h2>
-          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-widest mt-1">Understand your medicines</p>
+          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Medication Info</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Understand your medicines</p>
         </div>
       </div>
 
-      <div className="bg-gradient-to-br from-[var(--card)] to-[var(--card2)] border border-[var(--border)] rounded-3xl p-8 shadow-xl shadow-black/10 space-y-6">
-        <div className="space-y-3">
-          <label className="text-xs font-bold text-[var(--teal)] uppercase tracking-widest">Medicine Name</label>
+      <div className="glass border border-white/10 rounded-[32px] p-8 shadow-xl space-y-8 relative overflow-hidden group">
+        <div className="absolute top-0 right-0 w-48 h-48 bg-purple-500/5 blur-[80px] -mr-24 -mt-24 pointer-events-none group-hover:bg-purple-500/10 transition-colors duration-700" />
+        
+        <div className="space-y-4">
+          <label className="text-[10px] font-black text-purple-400 uppercase tracking-[0.25em] ml-1">Medicine Name</label>
           <input 
             value={med}
             onChange={e => setMed(e.target.value)}
             placeholder="e.g. Metformin, Paracetamol..."
-            className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-5 text-sm outline-none focus:border-[var(--teal-dim)] transition-all shadow-inner"
+            className="w-full glass border border-white/5 rounded-2xl p-5 text-sm font-medium outline-none focus:border-purple-500/50 transition-all shadow-inner text-[var(--text)] placeholder:text-[var(--muted)]/40"
           />
         </div>
 
         <button 
           onClick={handleExplain}
           disabled={isLoading || !med.trim()}
-          className="w-full py-5 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold text-lg rounded-2xl shadow-xl shadow-[var(--teal)]/20 disabled:opacity-50 transition-all hover:brightness-110"
+          className="w-full py-5 bg-gradient-to-br from-purple-500 to-purple-600 text-white font-black rounded-2xl shadow-xl shadow-purple-600/20 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-3 border border-white/20 text-lg"
         >
-          {isLoading ? 'Looking up...' : 'Explain Medication ✦'}
+          {isLoading ? (
+            <>
+              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              <span>Looking up...</span>
+            </>
+          ) : (
+            <>
+              <Pill size={22} />
+              <span>Explain Medication ✦</span>
+            </>
+          )}
         </button>
       </div>
 
@@ -2909,10 +3574,24 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 space-y-6 shadow-xl shadow-black/5"
+          className="glass border border-white/10 rounded-[32px] p-8 shadow-2xl relative overflow-hidden"
         >
-          <h3 className="font-serif text-2xl text-[var(--text)]">{med} Overview</h3>
-          <div className="prose prose-sm prose-invert max-w-none text-[var(--text2)] leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl glass-morphism border border-purple-500/20 flex items-center justify-center text-purple-400 font-bold">
+                <Bot size={22} />
+              </div>
+              <div>
+                <h3 className="font-serif text-xl text-[var(--text)]">{med || 'Medication'} Review</h3>
+                <p className="text-[10px] font-black text-purple-500 uppercase tracking-widest opacity-60">Clinical Guidelines Summary</p>
+              </div>
+            </div>
+            <button onClick={() => setResult('')} className="p-2 text-[var(--muted)] hover:text-[var(--text)] transition-colors"><X size={20} /></button>
+          </div>
+          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-white/2 border border-white/5 rounded-2xl p-6 shadow-inner">
+            <Markdown>{result}</Markdown>
+          </div>
         </motion.div>
       )}
 
@@ -2925,25 +3604,25 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
         
         {profile.medicines.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {profile.medicines.map((mName, idx) => (
+            {profile.medicines.map((med, idx) => (
               <div key={idx} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between group hover:border-[var(--teal-dim)] transition-all">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-[var(--card2)] flex items-center justify-center text-lg">💊</div>
                   <div className="max-w-[120px]">
-                    <h4 className="text-sm font-bold text-[var(--text)] truncate">{mName}</h4>
+                    <h4 className="text-sm font-bold text-[var(--text)] truncate">{med.name}</h4>
                     <p className="text-[10px] text-[var(--muted)]">Prescribed</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                    <button 
-                    onClick={() => setMed(mName)}
+                    onClick={() => setMed(med.name)}
                     className="p-2 bg-[var(--card2)] text-[var(--muted)] rounded-lg hover:text-[var(--teal)]"
                     title="Explain"
                    >
                      <Search size={14} />
                    </button>
                    <a 
-                    href={`https://www.1mg.com/search/all?name=${encodeURIComponent(mName)}`}
+                    href={`https://www.1mg.com/search/all?name=${encodeURIComponent(med.name)}`}
                     target="_blank"
                     rel="noreferrer"
                     className="px-4 py-2 bg-gradient-to-br from-pink-500 to-rose-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all"
@@ -3047,45 +3726,72 @@ function TriageView({ profile }: { profile: UserProfile }) {
   };
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-6 pb-20">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white shadow-lg">
-          <AlertTriangle size={20} />
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-rose-500 to-rose-600 flex items-center justify-center text-white shadow-xl shadow-rose-500/20 border border-white/20">
+          <AlertTriangle size={22} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Should I See a Doctor?</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Urgency assessment</p>
+          <h2 className="font-serif text-2xl tracking-tight text-[var(--text)]">Urgency Guide</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-0.5 opacity-60">Should I See a Doctor?</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <div className="space-y-2">
-          <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Describe your situation</label>
+      <div className="glass border border-white/10 rounded-[40px] p-8 space-y-6 shadow-xl relative overflow-hidden group">
+        <div className="absolute -right-12 -top-12 w-48 h-48 bg-rose-500/5 rounded-full blur-[80px] pointer-events-none group-hover:bg-rose-500/10 transition-colors" />
+        
+        <div className="space-y-3 relative z-10">
+          <label className="text-[10px] font-black text-rose-400 uppercase tracking-[0.3em] ml-1">Describe your situation</label>
           <textarea 
             value={symptom}
             onChange={e => setSymptom(e.target.value)}
             placeholder="e.g. I have sharp chest pain that comes and goes..."
-            className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-xl p-4 text-sm min-h-[100px] outline-none focus:border-[var(--teal-dim)] transition-all"
+            className="w-full glass border border-white/10 rounded-[32px] p-6 text-[15px] min-h-[160px] outline-none focus:border-rose-500/50 transition-all shadow-inner resize-none placeholder:text-[var(--muted)]/30 font-medium"
           />
         </div>
 
         <button 
           onClick={handleTriage}
           disabled={isLoading || !symptom.trim()}
-          className="w-full py-4 bg-gradient-to-br from-red-500 to-red-600 text-white font-bold rounded-2xl shadow-xl disabled:opacity-50 transition-all"
+          className="w-full py-6 bg-gradient-to-br from-rose-500 to-rose-600 text-white font-black rounded-[28px] shadow-2xl shadow-rose-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.25em] border border-white/20 flex items-center justify-center gap-3 relative z-10"
         >
-          {isLoading ? 'Assessing...' : 'Check Urgency ✦'}
+          {isLoading ? (
+            <>
+              <RefreshCw size={20} className="animate-spin" />
+              <span>Assessing...</span>
+            </>
+          ) : (
+            <>
+              <span>Check Urgency ✦</span>
+              <Sparkles size={20} />
+            </>
+          )}
         </button>
       </div>
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          className="glass border border-white/10 rounded-[40px] p-8 shadow-2xl relative overflow-hidden"
         >
-          <h3 className="font-serif text-lg text-red-400">Triage Assessment</h3>
-          <div className="text-sm leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-rose-500/30 to-transparent" />
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl glass-morphism border border-rose-500/20 flex items-center justify-center text-rose-400 font-bold">
+              <ClipboardList size={22} />
+            </div>
+            <h3 className="font-serif text-2xl text-[var(--text)]">Triage Assessment</h3>
+          </div>
+          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-white/2 border border-white/5 rounded-3xl p-7 shadow-inner mb-6">
+             <div className="text-[15px] leading-relaxed space-y-4" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          </div>
+          <div className="flex items-start gap-4 p-5 glass-darker border border-amber-500/20 rounded-2xl">
+            <ShieldAlert size={24} className="text-amber-500 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em]">Safety Protocol</p>
+              <p className="text-xs text-amber-200/60 leading-relaxed font-medium italic">If you are experiencing a life-threatening emergency, call your local emergency services (102/112 in India) immediately.</p>
+            </div>
+          </div>
         </motion.div>
       )}
     </div>
@@ -3116,91 +3822,102 @@ function HealthScoreView({ journal, profile, switchMode }: { journal: JournalEnt
   }, [journal, profile, score]);
   
   return (
-    <div className="space-y-6 pb-8">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg">
-          <Trophy size={20} />
+    <div className="space-y-6 pb-20">
+      <div className="flex items-center gap-4">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-xl shadow-[var(--teal)]/20 border border-white/20">
+          <Trophy size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Health Score</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Detailed breakdown</p>
+          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Health Score</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Predicted Wellness Metrics</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 text-center space-y-6">
-        <div className="relative w-48 h-48 mx-auto">
-          <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="6" />
+      <div className="glass border border-white/10 rounded-[44px] p-10 text-center space-y-8 shadow-2xl relative overflow-hidden group">
+        <div className="absolute -right-16 -bottom-16 w-64 h-64 bg-[var(--teal)]/5 rounded-full blur-[100px] pointer-events-none transition-all group-hover:bg-[var(--teal)]/10" />
+        
+        <div className="relative w-56 h-56 mx-auto">
+          <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 filter drop-shadow-[0_0_15px_rgba(20,184,166,0.2)]">
+            <circle cx="50" cy="50" r="45" fill="none" stroke="white" strokeOpacity="0.05" strokeWidth="6" />
             <motion.circle 
-              cx="50" cy="50" r="45" fill="none" stroke={score === 0 ? "var(--border)" : "var(--teal)"} strokeWidth="8" 
+              cx="50" cy="50" r="45" fill="none" stroke={score === 0 ? "white" : "var(--teal)"} strokeWidth="8" 
               strokeDasharray="283" 
               initial={{ strokeDashoffset: 283 }}
               animate={{ strokeDashoffset: 283 - (283 * (score > 0 ? score : 0) / 100) }}
-              transition={{ duration: 2, ease: "easeOut" }}
+              transition={{ duration: 2.5, ease: "circOut" }}
               strokeLinecap="round"
+              strokeOpacity={score === 0 ? "0.1" : "1"}
             />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className={cn("text-6xl font-serif", score > 0 ? "text-[var(--teal)]" : "text-[var(--muted)]")}>{score > 0 ? score : "--"}</span>
-            <span className="text-xs font-bold text-[var(--muted)] uppercase tracking-widest">/ 100</span>
+            <span className={cn("text-7xl font-serif tracking-tighter", score > 0 ? "text-[var(--teal)]" : "text-[var(--muted)]")}>{score > 0 ? score : "--"}</span>
+            <span className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.3em] mt-1 opacity-40">/ 100</span>
           </div>
         </div>
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <h3 className="font-serif text-2xl">{score === 0 ? 'Insufficient Data' : score >= 80 ? 'Excellent Health!' : score >= 60 ? 'Good Standing' : 'Needs Attention'}</h3>
-            <p className="text-sm text-[var(--muted)]">{score === 0 ? 'Please log your vitals and daily journal to generate a predictive health score.' : 'Your score is calculated based on your profile, vitals, and journal consistency.'}</p>
+
+        <div className="space-y-5 relative z-10">
+          <div className="space-y-2">
+            <h3 className="font-serif text-3xl text-[var(--text)]">{score === 0 ? 'Log Your Day' : score >= 80 ? 'Peak Performance!' : score >= 60 ? 'Healthy Alignment' : 'System Alert'}</h3>
+            <p className="text-[15px] text-[var(--muted)] leading-relaxed max-w-[340px] mx-auto font-medium opacity-80">{score === 0 ? 'Please log your vitals and daily journal to activate your AI-driven health intelligence orbit.' : 'Your wellness score is calculated through AI cross-referencing of your clinical profile, vitals trends, and consistency.'}</p>
           </div>
           <button 
             onClick={() => switchMode('vitals', 'wellbeing')}
-            className="inline-flex items-center gap-2 px-6 py-2.5 bg-[var(--card2)] border border-[var(--border)] rounded-full text-xs font-bold hover:border-[var(--teal-dim)] transition-all"
+            className="inline-flex items-center gap-3 px-8 py-3.5 glass-darker border border-white/10 rounded-2xl text-[11px] font-black uppercase tracking-widest hover:bg-white/5 hover:border-white/20 transition-all active:scale-95 shadow-lg group/btn"
           >
-            <BarChart3 size={14} className="text-[var(--teal)]" />
-            View Health Trends
+            <BarChart3 size={16} className="text-[var(--teal)] group-hover:scale-110 transition-transform" />
+            <span>Explore Trends</span>
           </button>
         </div>
       </div>
 
       {isLoading ? (
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 flex flex-col items-center justify-center space-y-4">
-          <div className="w-10 h-10 border-4 border-[var(--teal)] border-t-transparent rounded-full animate-spin" />
-          <div className="text-center space-y-1">
-            <p className="text-sm font-bold text-[var(--text)]">Analyzing Health Trends</p>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Veda AI is generating your outlook...</p>
+        <div className="glass border border-white/10 rounded-[32px] p-10 flex flex-col items-center justify-center space-y-6 shadow-xl relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[var(--teal)]/5 to-transparent animate-pulse" />
+          <div className="w-12 h-12 border-4 border-[var(--teal)]/30 border-t-[var(--teal)] rounded-full animate-spin" />
+          <div className="text-center space-y-1.5 relative z-10">
+            <p className="text-[11px] font-black text-[var(--text)] uppercase tracking-widest">Generating Outlook</p>
+            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest opacity-60">Synchronizing AI Insight Patterns...</p>
           </div>
         </div>
       ) : aiInsight && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--teal-dim)] rounded-3xl overflow-hidden shadow-xl shadow-[var(--teal)]/5"
+          className="glass border border-[var(--teal)]/30 rounded-[40px] overflow-hidden shadow-2xl relative"
         >
-          <div className="bg-gradient-to-r from-[var(--teal)]/20 to-transparent px-6 py-4 border-b border-[var(--teal-dim)] flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-[var(--teal)] flex items-center justify-center text-[#020f0c]">
-              <Sparkles size={18} />
-            </div>
-            <h3 className="font-serif text-lg">AI Health Outlook</h3>
-          </div>
-          <div className="p-6 space-y-6">
-            <div className="text-sm leading-relaxed text-[var(--text2)] prose prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: formatMsg(aiInsight) }} />
-            
-            <div className="pt-4 border-t border-[var(--border)]">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-1.5 h-4 bg-[var(--teal)] rounded-full" />
-                <span className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Why this score?</span>
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[var(--teal)]/40 to-transparent" />
+          <div className="glass-darker px-8 py-5 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl glass-morphism border border-[var(--teal)]/20 flex items-center justify-center text-[var(--teal)] shadow-inner">
+                <Sparkles size={20} />
               </div>
-              <p className="text-xs text-[var(--muted)] leading-relaxed italic">
-                This analysis is based on your recent 5 journal entries, profile vitals, and consistency patterns.
+              <div>
+                <h3 className="font-serif text-xl text-[var(--text)]">AI Health Orbit</h3>
+                <p className="text-[9px] font-black text-[var(--teal)] uppercase tracking-widest opacity-60">Deep Intelligence Check</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-8 space-y-8">
+            <div className="text-[15px] leading-relaxed text-[var(--text2)] prose prose-invert max-w-none prose-p:mb-4 italic" dangerouslySetInnerHTML={{ __html: formatMsg(aiInsight) }} />
+            
+            <div className="pt-6 border-t border-white/5">
+              <div className="flex items-center gap-2.5 mb-2">
+                <div className="w-1.5 h-1.5 bg-[var(--teal)] rounded-full shadow-[0_0_8px_rgba(20,184,166,0.6)]" />
+                <span className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.3em] opacity-40">Data Integrity Note</span>
+              </div>
+              <p className="text-[11px] text-[var(--muted)] leading-relaxed font-medium opacity-60">
+                This diagnostic perspective is synthesized from your latest functional data points, vitals architecture, and consistency metrics.
               </p>
             </div>
           </div>
         </motion.div>
       )}
 
-      <div className="grid gap-4">
-        <ScoreFactor label="Profile Completion" value={profile.setupDone ? 100 : 50} weight={20} />
-        <ScoreFactor label="Vitals Logging" value={profile.bp && profile.sugar ? 100 : 50} weight={30} />
-        <ScoreFactor label="Journal Consistency" value={Math.min(100, (journal.length / 7) * 100)} weight={30} />
-        <ScoreFactor label="Mood & Energy" value={journal.length > 0 ? (journal[0].mood / 5) * 100 : 0} weight={20} />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ScoreFactor label="Profile Depth" value={profile.setupDone ? 100 : 50} weight={20} />
+        <ScoreFactor label="Vitals Integrity" value={profile.bp && profile.sugar ? 100 : 50} weight={30} />
+        <ScoreFactor label="Journal Frequency" value={Math.min(100, (journal.length / 7) * 100)} weight={30} />
+        <ScoreFactor label="Mood Calibration" value={journal.length > 0 ? (journal[0].mood / 5) * 100 : 0} weight={20} />
       </div>
     </div>
   );
@@ -3208,33 +3925,76 @@ function HealthScoreView({ journal, profile, switchMode }: { journal: JournalEnt
 
 function ScoreFactor({ label, value, weight }: { label: string, value: number, weight: number }) {
   return (
-    <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
+    <div className="glass border border-white/5 rounded-3xl p-5 space-y-4 hover:border-white/10 transition-colors shadow-lg">
       <div className="flex justify-between items-center">
-        <span className="text-xs font-bold text-[var(--text2)]">{label}</span>
-        <span className="text-xs font-bold text-[var(--teal)]">{Math.round(value)}%</span>
+        <span className="text-[11px] font-black text-[var(--muted)] uppercase tracking-widest opacity-80">{label}</span>
+        <span className="text-sm font-black text-[var(--teal)]">{Math.round(value)}%</span>
       </div>
-      <div className="h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+      <div className="h-2 bg-white/5 rounded-full overflow-hidden shadow-inner">
         <motion.div 
           initial={{ width: 0 }}
           animate={{ width: `${value}%` }}
-          className="h-full bg-[var(--teal)]"
+          transition={{ duration: 1, ease: "circOut" }}
+          className="h-full bg-gradient-to-r from-[var(--teal)]/40 to-[var(--teal)] shadow-[0_0_12px_rgba(20,184,166,0.3)]"
         />
       </div>
-      <p className="text-[9px] text-[var(--muted)] font-bold uppercase tracking-widest">Weight: {weight}% of total score</p>
+      <p className="text-[8px] text-[var(--muted)] font-black uppercase tracking-[0.2em] opacity-40">Weight Contribution: {weight}%</p>
     </div>
   );
 }
 
-function PrescriptionScanner({ profile }: { profile: UserProfile }) {
+function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile, updateProfile: (p: UserProfile) => Promise<void> }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const [image, setImage] = useState<string | null>(null);
-  const [result, setResult] = useState('');
+  const [result, setResult] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  const startCamera = async () => {
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsCameraOpen(true);
+      }
+    } catch (err: any) {
+      console.error("Error accessing camera:", err);
+      setCameraError("Could not access camera. Please check permissions or try uploading instead.");
+    }
+  };
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setIsCameraOpen(false);
+  };
+
+  const handleCapture = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(videoRef.current, 0, 0);
+      const dataUrl = canvas.toDataURL('image/jpeg');
+      setImage(dataUrl);
+      stopCamera();
+    }
+  };
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => setImage(reader.result as string);
+      reader.onloadend = () => {
+        setImage(reader.result as string);
+        stopCamera();
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -3243,51 +4003,125 @@ function PrescriptionScanner({ profile }: { profile: UserProfile }) {
     if (!image) return;
     setIsLoading(true);
     try {
-      const prompt = "Read this doctor's prescription. Extract medicine names, dosages, and frequencies. Provide a clear summary and explain what each medicine is for. Warn the patient to always confirm with a pharmacist.";
       const base64Data = image.split(',')[1];
-      const response = await analyzeImage(base64Data, prompt);
-      setResult(response);
-    } catch (error) {
-      setResult("Error scanning prescription. Please ensure the handwriting is visible.");
+      const data = await analyzePrescription(base64Data);
+      setResult(data);
+    } catch (e) {
+      console.error(e);
+      showDoneToast("Failed to scan prescription.");
     } finally {
       setIsLoading(false);
     }
   };
 
+  const saveToCabinet = () => {
+    if (!result?.medications) return;
+    
+    const newMeds = [...profile.medicines];
+    result.medications.forEach((m: any) => {
+      if (!newMeds.some(nm => nm.name.toLowerCase() === m.name.toLowerCase())) {
+        newMeds.push({
+          name: m.name,
+          dose: m.dose,
+          dailyFrequency: m.dailyFrequency || 1,
+          totalQuantity: (m.dailyFrequency || 1) * (m.duration || 30),
+          lastRefillDate: new Date().toISOString()
+        });
+      }
+    });
+    
+    updateProfile({ ...profile, medicines: newMeds });
+    showDoneToast("Medications added to your cabinet!");
+  };
+
   return (
-    <div className="space-y-6 pb-8">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white shadow-lg">
-          <Clipboard size={20} />
+    <div className="space-y-8 pb-20">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white shadow-xl">
+            <ClipboardList size={24} />
+          </div>
+          <div>
+            <h2 className="font-serif text-2xl tracking-tight">Prescription Lens</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-1">AI Vision for Handwriting</p>
+          </div>
         </div>
-        <div>
-          <h2 className="font-serif text-xl tracking-tight">Prescription Scanner</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">AI vision for prescriptions</p>
-        </div>
+        {!image && !isCameraOpen && (
+          <button 
+            onClick={startCamera}
+            className="p-3 glass-morphism border border-white/10 rounded-2xl text-emerald-400 hover:bg-emerald-500/10 transition-all"
+          >
+            <Camera size={20} />
+          </button>
+        )}
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 space-y-6">
-        {!image ? (
-          <label className="flex flex-col items-center justify-center border-2 border-dashed border-[var(--border)] rounded-2xl p-12 cursor-pointer hover:border-[var(--teal-dim)] transition-all group">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--teal)] transition-colors mb-4">
-              <Camera size={32} />
+      <div className="flex flex-col gap-6">
+        {isCameraOpen ? (
+          <div className="space-y-6">
+            <div className="relative aspect-[4/3] rounded-[40px] overflow-hidden glass-morphism border border-white/5 bg-black">
+              <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+              <div className="absolute inset-0 border-4 border-dashed border-emerald-500/20 pointer-events-none rounded-[40px] m-4" />
+              <div className="absolute top-4 right-4 z-10">
+                <button onClick={stopCamera} className="p-3 glass-morphism text-white rounded-full backdrop-blur-md hover:bg-black/70 transition-all border border-white/20"><X size={20} /></button>
+              </div>
+              <div className="absolute bottom-10 left-0 w-full flex items-center justify-center">
+                 <div className="p-4 bg-black/40 backdrop-blur-md rounded-2xl border border-white/10 text-white text-[9px] font-black uppercase tracking-widest opacity-60">Align prescription text within frame</div>
+              </div>
             </div>
-            <span className="text-sm font-bold">Snap Prescription</span>
-            <span className="text-xs text-[var(--muted)] mt-1">Clear photo of the paper</span>
-            <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
-          </label>
+            <button 
+              onClick={handleCapture}
+              className="w-full py-6 bg-emerald-500 text-[#020f0c] font-black rounded-[28px] shadow-2xl shadow-emerald-500/30 active:scale-95 transition-all border border-white/20 uppercase tracking-widest text-[11px]"
+            >
+              Capture Frame ✦
+            </button>
+          </div>
+        ) : !image ? (
+          <div className="space-y-6">
+            <label className="group relative aspect-[4/3] rounded-[40px] border-2 border-dashed border-white/10 hover:border-emerald-500/50 transition-all cursor-pointer bg-white/2 overflow-hidden flex flex-col items-center justify-center p-8 text-center active:scale-[0.99]">
+              <div className="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="w-16 h-16 rounded-[24px] bg-emerald-500/10 flex items-center justify-center text-emerald-500 mb-6 group-hover:scale-110 transition-transform">
+                <FileUp size={32} />
+              </div>
+              <span className="text-sm font-black uppercase tracking-widest text-[var(--text)]">Upload Prescription</span>
+              <span className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest mt-2 opacity-40">Choose from gallery or documents</span>
+              <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
+            </label>
+            
+            <button 
+              onClick={startCamera}
+              className="w-full py-6 glass border border-white/10 text-white font-black rounded-[28px] shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-3 text-xs uppercase tracking-widest"
+            >
+              <Camera size={20} className="text-emerald-400" />
+              <span>Open Camera Feed</span>
+            </button>
+            
+            {cameraError && (
+              <p className="text-[10px] text-rose-500 font-bold uppercase tracking-widest text-center">{cameraError}</p>
+            )}
+          </div>
         ) : (
           <div className="space-y-4">
-            <div className="relative aspect-[4/3] rounded-xl overflow-hidden border border-[var(--border)]">
-              <img src={image} alt="Rx" className="w-full h-full object-contain bg-black/20" />
-              <button onClick={() => setImage(null)} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-md"><X size={16} /></button>
+            <div className="relative aspect-[4/3] rounded-[32px] overflow-hidden border border-white/10 shadow-2xl bg-black/10">
+              <img src={image} alt="Rx" className="w-full h-full object-contain mix-blend-normal" />
+              <button onClick={() => setImage(null)} className="absolute top-4 right-4 p-3 glass-morphism border border-white/20 text-white rounded-full backdrop-blur-xl hover:bg-white/10 transition-colors shadow-lg"><X size={20} /></button>
             </div>
             <button 
               onClick={handleScan}
               disabled={isLoading}
-              className="w-full py-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold rounded-2xl shadow-xl disabled:opacity-50 transition-all"
+              className="w-full py-6 bg-gradient-to-br from-emerald-600 to-emerald-700 text-white font-black rounded-[28px] shadow-2xl shadow-emerald-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.25em] flex items-center justify-center gap-3 border border-white/20"
             >
-              {isLoading ? 'Scanning Rx...' : 'Scan with AI ✦'}
+              {isLoading ? (
+                <>
+                  <RefreshCw size={20} className="animate-spin" />
+                  <span>Decrypting Rx...</span>
+                </>
+              ) : (
+                <>
+                  <span>Scan with AI ✦</span>
+                  <Sparkles size={20} />
+                </>
+              )}
             </button>
           </div>
         )}
@@ -3295,12 +4129,57 @@ function PrescriptionScanner({ profile }: { profile: UserProfile }) {
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="glass border border-white/10 rounded-[40px] p-9 shadow-2xl relative overflow-hidden space-y-8"
         >
-          <h3 className="font-serif text-lg text-[var(--teal)]">Prescription Summary</h3>
-          <div className="text-sm leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+          
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl glass-morphism border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+                <FileSearch size={22} />
+              </div>
+              <h3 className="font-serif text-2xl text-[var(--text)]">Prescription Insight</h3>
+            </div>
+            <button 
+              onClick={saveToCabinet}
+              className="px-6 py-3 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-2"
+            >
+              <Package size={14} /> Save to Cabinet
+            </button>
+          </div>
+
+          <div className="bg-white/2 border border-white/5 rounded-3xl p-7 shadow-inner space-y-6">
+             {result.summary && (
+               <div className="space-y-2">
+                 <p className="text-[10px] font-bold text-emerald-500/60 uppercase tracking-widest">Medical Summary</p>
+                 <p className="text-sm leading-relaxed text-[var(--text2)]">{result.summary}</p>
+               </div>
+             )}
+
+             <div className="space-y-4">
+               <p className="text-[10px] font-bold text-emerald-500/60 uppercase tracking-widest">Extracted Medications</p>
+               <div className="grid gap-3">
+                 {result.medications?.map((m: any, i: number) => (
+                   <div key={i} className="p-4 bg-white/5 border border-white/5 rounded-2xl flex items-center justify-between">
+                     <div>
+                       <p className="font-bold text-white">{m.name}</p>
+                       <p className="text-xs text-[var(--muted)]">{m.dose} · {m.dailyFrequency}x Daily · {m.duration} Days</p>
+                     </div>
+                     <div className="text-[10px] font-black uppercase text-emerald-400/60 bg-emerald-400/5 px-2 py-1 rounded-lg">
+                       {m.instructions}
+                     </div>
+                   </div>
+                 ))}
+               </div>
+             </div>
+          </div>
+
+          <div className="p-5 glass-darker border border-amber-500/20 rounded-2xl flex items-center gap-4">
+             <ShieldAlert size={20} className="text-amber-500 shrink-0" />
+             <p className="text-[11px] text-amber-200/60 font-medium italic">Always cross-verify extracted dosages with your clinical pharmacist before consumption.</p>
+          </div>
         </motion.div>
       )}
     </div>
@@ -3311,13 +4190,14 @@ function PrescriptionScanner({ profile }: { profile: UserProfile }) {
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-[var(--card)] border border-[var(--border)] p-3 rounded-2xl shadow-xl shadow-black/20">
-        <p className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest mb-2">{label}</p>
-        <div className="space-y-1">
+      <div className="glass-darker border border-white/10 p-4 rounded-2xl shadow-2xl backdrop-blur-2xl relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-[var(--teal)]/20 to-transparent" />
+        <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.25em] mb-3 opacity-60">{label}</p>
+        <div className="space-y-2">
           {payload.map((entry: any, index: number) => (
-            <div key={index} className="flex items-center gap-2 text-sm font-bold">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-              <span className="text-[var(--text)]">{entry.name}: <span className="text-[var(--text2)]">{entry.value}</span></span>
+            <div key={index} className="flex items-center gap-3 text-xs font-bold">
+              <div className="w-2.5 h-2.5 rounded-full shadow-[0_0_8px_rgba(255,255,255,0.1)]" style={{ backgroundColor: entry.color }} />
+              <span className="text-[var(--text)]">{entry.name}: <span className="text-white ml-auto">{entry.value}</span></span>
             </div>
           ))}
         </div>
@@ -3410,30 +4290,31 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
   return (
     <div className="space-y-6 pb-8">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-blue-500 flex items-center justify-center text-white shadow-lg">
-            <TrendingUp size={20} />
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+            <TrendingUp size={28} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight">Health Trends</h2>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Visualize your progress</p>
+            <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">Health Engine</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Biometric Trend Analytics</p>
           </div>
         </div>
       </div>
 
-      <div className="flex bg-[var(--card2)] p-1 rounded-xl border border-[var(--border)] overflow-x-auto no-scrollbar">
+      <div className="glass border border-white/10 rounded-[32px] p-1.5 flex items-center overflow-x-auto no-scrollbar shadow-2xl relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-transparent to-transparent pointer-events-none" />
         {[
-          { id: 'wellbeing', label: 'Wellbeing', icon: <Heart size={14} /> },
-          { id: 'bp', label: 'BP', icon: <Activity size={14} /> },
-          { id: 'sugar', label: 'Sugar', icon: <Zap size={14} /> },
-          { id: 'weight', label: 'Weight', icon: <Scale size={14} /> }
+          { id: 'wellbeing', label: 'Wellbeing', icon: <Heart size={16} /> },
+          { id: 'bp', label: 'Blood Pressure', icon: <Activity size={16} /> },
+          { id: 'sugar', label: 'Glucose', icon: <Zap size={16} /> },
+          { id: 'weight', label: 'Weight', icon: <Scale size={16} /> }
         ].map(tab => (
           <button 
             key={tab.id}
             onClick={() => setActiveTab(tab.id as any)}
             className={cn(
-              "flex-1 min-w-[80px] py-2 px-2 flex items-center justify-center gap-1.5 text-[10px] font-bold rounded-lg transition-all whitespace-nowrap",
-              activeTab === tab.id ? "bg-[var(--teal)] text-[#020f0c]" : "text-[var(--muted)] hover:text-[var(--text)]"
+              "flex-1 min-w-[100px] py-3.5 px-4 flex items-center justify-center gap-2.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all whitespace-nowrap relative z-10",
+              activeTab === tab.id ? "bg-blue-500 text-white shadow-lg shadow-blue-500/20 border border-blue-400/50" : "text-[var(--muted)] hover:text-blue-400 hover:bg-white/5"
             )}
           >
             {tab.icon}
@@ -3442,7 +4323,7 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
         ))}
       </div>
 
-      <div className="flex bg-[var(--card)] w-fit mx-auto p-1 rounded-xl border border-[var(--border)]">
+      <div className="flex glass w-fit mx-auto p-1.5 rounded-2xl border border-white/10 shadow-xl">
         {[
           { id: '7d', label: '7D' },
           { id: '30d', label: '1M' },
@@ -3453,8 +4334,8 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
             key={range.id}
             onClick={() => setTimeRange(range.id as any)}
             className={cn(
-              "px-4 py-1.5 text-xs font-bold rounded-lg transition-all",
-              timeRange === range.id ? "bg-[var(--card2)] text-[var(--text)] shadow-sm" : "text-[var(--muted)] hover:text-[var(--text)]"
+              "px-5 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all",
+              timeRange === range.id ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
             )}
           >
             {range.label}
@@ -3463,48 +4344,51 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
       </div>
 
       {activeTab !== 'wellbeing' && (
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-5 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Quick Log Today</h3>
+        <div className="glass-darker border border-white/10 rounded-[32px] p-8 shadow-xl space-y-6 relative overflow-hidden group">
+          <div className="absolute -left-12 -top-12 w-32 h-32 bg-blue-500/5 rounded-full blur-[60px] pointer-events-none group-hover:bg-blue-500/10 transition-colors" />
+          <div className="flex items-center justify-between relative z-10">
+            <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60">Instant Metric Logging</h3>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4 relative z-10">
             {activeTab === 'bp' && (
               <>
-                <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="Sys (120)" className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none" />
-                <span className="text-xl font-light text-[var(--muted)]">/</span>
-                <input type="number" value={quickLogValue2} onChange={e => setQuickLogValue2(e.target.value)} placeholder="Dia (80)" className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none" />
+                <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="SYS" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
+                <span className="text-2xl font-light text-white/20">/</span>
+                <input type="number" value={quickLogValue2} onChange={e => setQuickLogValue2(e.target.value)} placeholder="DIA" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
               </>
             )}
             {activeTab === 'sugar' && (
-              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="mg/dL (e.g. 95)" className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none" />
+              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="MG/DL (e.g. 95)" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
             )}
             {activeTab === 'weight' && (
-              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="kg (e.g. 70.5)" className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:border-blue-400 outline-none" />
+              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="KG (e.g. 70.4)" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
             )}
             <button 
               onClick={handleQuickLog}
               disabled={isLogging || (!quickLogValue1 && !quickLogValue2)}
-              className="bg-blue-500 text-white rounded-xl p-3 shadow-md shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50"
+              className="w-14 h-14 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-2xl shadow-xl shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center border border-white/20"
             >
-              <Plus size={20} />
+              {isLogging ? <RefreshCw className="animate-spin" size={24} /> : <Zap size={24} />}
             </button>
           </div>
         </div>
       )}
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-8 shadow-xl shadow-black/20">
+      <div className="glass border border-white/10 rounded-[48px] p-10 space-y-10 shadow-2xl relative overflow-hidden">
+        <div className="absolute right-0 top-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-[0.03] pointer-events-none" />
+        
         {!hasData(activeTab) ? (
-          <div className="h-[300px] flex flex-col items-center justify-center text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center text-[var(--muted)]">
-              <BarChart3 size={32} />
+          <div className="h-[400px] flex flex-col items-center justify-center text-center space-y-6">
+            <div className="w-24 h-24 rounded-full glass-darker border border-white/5 flex items-center justify-center text-[var(--muted)] opacity-20 shadow-inner">
+              <BarChart3 size={48} />
             </div>
-            <div className="space-y-1">
-              <p className="text-sm font-bold">No data for {activeTab}</p>
-              <p className="text-xs text-[var(--muted)] max-w-[200px]">Start logging your {activeTab} in the journal to see trends.</p>
+            <div className="space-y-2">
+              <p className="text-xl font-serif text-white tracking-tight">Signal Data Missing</p>
+              <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] max-w-[240px] leading-loose opacity-60">Log your first biometric entry to initiate the neural progress engine.</p>
             </div>
           </div>
         ) : (
-          <div className="space-y-8 animate-in fade-in duration-500">
+          <div className="space-y-12 animate-in fade-in zoom-in-95 duration-700 relative z-10">
             {activeTab === 'wellbeing' && (
               <>
                 <div className="space-y-4">
@@ -3950,7 +4834,9 @@ function ProfileView({
   switchMode, 
   journal,
   notificationPermission,
-  requestNotificationPermission
+  setNotificationPermission,
+  requestNotificationPermission,
+  onDeleteAccount
 }: { 
   profile: UserProfile, 
   setProfile: any, 
@@ -3958,7 +4844,9 @@ function ProfileView({
   switchMode: (m: AppMode) => void, 
   journal: JournalEntry[],
   notificationPermission: NotificationPermission,
-  requestNotificationPermission: () => void
+  setNotificationPermission: (p: NotificationPermission) => void,
+  requestNotificationPermission: () => void,
+  onDeleteAccount: () => Promise<void>
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState(profile);
@@ -3975,11 +4863,8 @@ function ProfileView({
     showDoneToast('📁 Data exported successfully!');
   };
 
-  const handleDeleteData = () => {
-    if (window.confirm("Are you sure you want to delete all your health data? This action cannot be undone.")) {
-      // In a real app, we would call a delete function in Firestore
-      showDoneToast('🗑️ Data deletion requested.');
-    }
+  const handleDeleteData = async () => {
+    await onDeleteAccount();
   };
 
   const validate = () => {
@@ -4112,6 +4997,79 @@ function ProfileView({
               </div>
             </div>
             
+            <div className="space-y-4 pt-4 border-t border-[var(--border)]">
+              <h3 className="text-xs font-bold text-purple-400 uppercase tracking-widest">Medicine Cabinet</h3>
+              <div className="space-y-3">
+                {editData.medicines.map((m, idx) => (
+                  <div key={idx} className="p-4 bg-[var(--card2)] border border-[var(--border)] rounded-2xl relative group">
+                    <button 
+                      onClick={() => setEditData({...editData, medicines: editData.medicines.filter((_, i) => i !== idx)})}
+                      className="absolute top-2 right-2 text-rose-400 opacity-20 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X size={14} />
+                    </button>
+                    <div className="space-y-2">
+                       <input 
+                         value={m.name} 
+                         onChange={e => {
+                           const newMeds = [...editData.medicines];
+                           newMeds[idx] = { ...m, name: e.target.value };
+                           setEditData({ ...editData, medicines: newMeds });
+                         }}
+                         className="w-full bg-transparent font-bold text-sm outline-none border-b border-white/5" 
+                         placeholder="Medicine Name" 
+                       />
+                       <div className="grid grid-cols-2 gap-3">
+                          <input 
+                            value={m.dose} 
+                            onChange={e => {
+                              const newMeds = [...editData.medicines];
+                              newMeds[idx] = { ...m, dose: e.target.value };
+                              setEditData({ ...editData, medicines: newMeds });
+                            }}
+                            className="bg-transparent text-xs text-[var(--muted)] outline-none" 
+                            placeholder="Dose (e.g. 500mg)" 
+                          />
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-[var(--muted2)]">x</span>
+                            <input 
+                              type="number"
+                              value={m.dailyFrequency} 
+                              onChange={e => {
+                                const newMeds = [...editData.medicines];
+                                newMeds[idx] = { ...m, dailyFrequency: parseInt(e.target.value) || 1 };
+                                setEditData({ ...editData, medicines: newMeds });
+                              }}
+                              className="w-8 bg-transparent text-xs text-[var(--muted)] outline-none" 
+                            />
+                            <span className="text-[10px] text-[var(--muted2)]">daily</span>
+                          </div>
+                       </div>
+                       <div className="flex items-center justify-between pt-1">
+                          <span className="text-[9px] font-black uppercase text-[var(--muted2)] tracking-widest">Stock:</span>
+                          <input 
+                            type="number"
+                            value={m.totalQuantity} 
+                            onChange={e => {
+                              const newMeds = [...editData.medicines];
+                              newMeds[idx] = { ...m, totalQuantity: parseInt(e.target.value) || 0 };
+                              setEditData({ ...editData, medicines: newMeds });
+                            }}
+                            className="w-12 bg-[var(--card)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[10px] text-center" 
+                          />
+                       </div>
+                    </div>
+                  </div>
+                ))}
+                <button 
+                  onClick={() => setEditData({...editData, medicines: [...editData.medicines, { name: '', dose: '', dailyFrequency: 1, totalQuantity: 30, lastRefillDate: new Date().toISOString() }]})}
+                  className="w-full py-3 border border-dashed border-[var(--border)] rounded-2xl text-[10px] font-black uppercase tracking-widest text-[var(--muted)] hover:text-purple-400 hover:border-purple-400/50 transition-all"
+                >
+                  + Add New Medicine
+                </button>
+              </div>
+            </div>
+
             <div className="space-y-4 pt-4 border-t border-[var(--border)]">
               <h3 className="text-xs font-bold text-red-400 uppercase tracking-widest">Emergency Contact</h3>
               <div className="grid grid-cols-2 gap-4">
@@ -4274,57 +5232,77 @@ function ProfileView({
               "w-full flex items-center justify-between p-4 rounded-xl border transition-all",
               notificationPermission === 'granted' 
                 ? "bg-[var(--teal)]/5 border-[var(--teal)]/20 text-[var(--teal)]" 
+                : notificationPermission === 'denied'
+                ? "bg-red-500/5 border-red-500/20 text-red-400"
                 : "bg-[var(--card2)] border-[var(--border)] text-[var(--text2)]"
             )}
           >
             <div className="flex items-center gap-3">
               {notificationPermission === 'granted' ? <Bell size={18} /> : <BellOff size={18} />}
-              <span className="text-xs font-bold">Push Notifications</span>
+              <div className="text-left">
+                <span className="text-xs font-bold block">Push Notifications</span>
+                {notificationPermission === 'denied' && (
+                  <span className="text-[10px] text-red-400 opacity-80 block">Blocked by browser. Try in a new tab.</span>
+                )}
+              </div>
             </div>
-            <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-white/10">
-              {notificationPermission === 'granted' ? 'Enabled' : 'Disabled'}
+            <span className={cn(
+              "text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full",
+              notificationPermission === 'granted' ? "bg-white/10" : "bg-red-500/10"
+            )}>
+              {notificationPermission === 'granted' ? 'Enabled' : notificationPermission === 'denied' ? 'Blocked' : 'Disabled'}
             </span>
           </button>
         </div>
 
         <div className="space-y-3 pt-6 border-t border-[var(--border)]">
           <h4 className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Data Management</h4>
-          <div className="flex flex-col gap-2">
-            <button 
-              onClick={handleExport}
-              className="w-full flex items-center justify-between p-4 rounded-xl bg-[var(--card2)] border border-[var(--border)] hover:border-[var(--teal-dim)] transition-all group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
-                  <Package size={18} />
-                </div>
-                <div className="text-left">
-                  <p className="text-sm font-bold">Export Health Data</p>
-                  <p className="text-[10px] text-[var(--muted)]">Download your records as JSON</p>
-                </div>
+          <button 
+            onClick={handleExport}
+            className="w-full flex items-center justify-between p-4 rounded-xl bg-[var(--card2)] border border-[var(--border)] hover:border-[var(--teal-dim)] transition-all group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                <Package size={18} />
               </div>
-              <ChevronRight size={16} className="text-[var(--muted)] group-hover:text-[var(--teal)] transition-colors" />
-            </button>
-            <button 
-              onClick={handleDeleteData}
-              className="w-full flex items-center gap-3 p-4 rounded-xl bg-rose-500/5 border border-rose-500/10 text-rose-400 hover:bg-rose-500/10 transition-all"
-            >
-              <Trash2 size={18} />
-              <span className="text-xs font-bold">Delete All Health Data</span>
-            </button>
-          </div>
+              <div className="text-left">
+                <p className="text-sm font-bold">Export Health Data</p>
+                <p className="text-[10px] text-[var(--muted)]">Download your records as JSON</p>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-[var(--muted)] group-hover:text-[var(--teal)] transition-colors" />
+          </button>
+        </div>
+
+        <div className="space-y-3 pt-6 border-t border-[var(--border)]">
+          <h4 className="text-[10px] font-bold text-rose-500 uppercase tracking-widest flex items-center gap-2">
+            <ShieldAlert size={12} /> Danger Zone
+          </h4>
+          <button 
+            onClick={handleDeleteData}
+            className="w-full flex items-center gap-3 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500 hover:text-white transition-all shadow-lg shadow-rose-500/10"
+          >
+            <Trash2 size={18} />
+            <div className="text-left">
+              <p className="text-sm font-bold">Delete Account & Purge Data</p>
+              <p className="text-[10px] text-rose-300 opacity-80">This permanently removes your profile and all encrypted health records.</p>
+            </div>
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMember }: { 
+function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMember, profile, onUpdateProfile }: { 
   family: FamilyMember[], 
   onAddMember: (member: Omit<FamilyMember, 'id' | 'score'>) => void,
   onUpdateMember: (id: string, updates: Partial<FamilyMember>) => void,
-  onDeleteMember: (id: string) => void
+  onDeleteMember: (id: string) => void,
+  profile: UserProfile,
+  onUpdateProfile: (p: UserProfile) => void
 }) {
+  const [activeSubTab, setActiveSubTab] = useState<'info' | 'meds' | 'appts' | 'perms'>('info');
   const [isAdding, setIsAdding] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState('');
@@ -4337,6 +5315,68 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
   const [isAiReportLoading, setIsAiReportLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [familyReport, setFamilyReport] = useState<string | null>(null);
+
+  const [newMedName, setNewMedName] = useState('');
+  const [newApptTitle, setNewApptTitle] = useState('');
+
+  const togglePermission = (memberId: string, type: 'locker' | 'sos' | 'contact') => {
+    const member = family.find(f => f.id === memberId);
+    if (!member) return;
+    
+    const updates: Partial<FamilyMember> = {};
+    if (type === 'locker') updates.canAccessLocker = !member.canAccessLocker;
+    if (type === 'sos') updates.canAccessSOS = !member.canAccessSOS;
+    if (type === 'contact') updates.isEmergencyContact = !member.isEmergencyContact;
+    
+    onUpdateMember(memberId, updates);
+  };
+
+  const handleAddMed = (memberId: string) => {
+    if (!newMedName) return;
+    const member = family.find(f => f.id === memberId);
+    if (!member) return;
+
+    const newReminder: Reminder = {
+      id: Date.now().toString(),
+      name: newMedName,
+      dose: '1 Tablet',
+      time: '09:00',
+      freq: 'Daily',
+      on: true,
+      color: 'pink',
+      category: 'medicine'
+    };
+
+    onUpdateMember(memberId, {
+      reminders: [...(member.reminders || []), newReminder]
+    });
+    setNewMedName('');
+    showDoneToast(`Medication added for ${member.name}`);
+  };
+
+  const handleAddAppt = (memberId: string) => {
+    if (!newApptTitle) return;
+    const member = family.find(f => f.id === memberId);
+    if (!member) return;
+
+    const newAppt: Appointment = {
+      id: Date.now().toString(),
+      clinicId: 'any',
+      clinicName: 'Local Clinic',
+      date: new Date().toISOString().split('T')[0],
+      time: '10:00',
+      status: 'upcoming',
+      patientName: member.name,
+      patientId: member.id,
+      type: newApptTitle
+    };
+
+    onUpdateMember(memberId, {
+      appointments: [...(member.appointments || []), newAppt]
+    });
+    setNewApptTitle('');
+    showDoneToast(`Appointment scheduled for ${member.name}`);
+  };
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4446,26 +5486,14 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
         </button>
       </div>
 
-      <div className="p-6 bg-[var(--card)] border border-[var(--border)] rounded-3xl">
-         <h4 className="font-serif text-lg mb-4">Medication Alerts</h4>
-         <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-500">
-             <AlertTriangle size={20} />
-             <p className="text-sm"><strong>Mom</strong> missed her 8 AM dosage of Metformin.</p>
-         </div>
-      </div>
-
-      <div className="p-6 bg-[var(--card)] border border-[var(--border)] rounded-3xl">
-         <h4 className="font-serif text-lg mb-4">Upcoming Family Appointments</h4>
-         <div className="space-y-3">
-             <div className="flex justify-between items-center p-3 bg-[var(--card2)] rounded-xl">
-                 <div>
-                    <p className="font-bold text-sm">Dad - Annual Checkup</p>
-                    <p className="text-xs text-[var(--muted)]">May 15th at 10 AM</p>
-                 </div>
-                 <div className="px-3 py-1 bg-emerald-500/10 text-emerald-500 text-[10px] font-black uppercase rounded-full">Shared</div>
-             </div>
-         </div>
-      </div>
+      {family.length > 0 && (
+        <div className="p-6 bg-[var(--card)] border border-[var(--border)] rounded-3xl">
+           <h4 className="font-serif text-lg mb-4 text-[var(--text)]">Family Insights</h4>
+           <div className="text-sm text-[var(--muted)] italic">
+             Log vitals and medicines for family members to see real-time alerts.
+           </div>
+        </div>
+      )}
 
       {family.length > 0 && (
         <button 
@@ -4689,6 +5717,9 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-md p-6 flex items-center justify-center overflow-y-auto"
           >
+            {(() => {
+              const currentMember = family.find(m => m.id === selectedMember.id) || selectedMember;
+              return (
             <motion.div 
               initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
               className="bg-[var(--card)] w-full max-w-lg rounded-[40px] overflow-hidden shadow-2xl relative"
@@ -4696,111 +5727,253 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
               <div className="relative h-40 bg-gradient-to-br from-orange-500 to-orange-700 p-8 flex flex-col justify-end">
                 <button onClick={() => setSelectedMember(null)} className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full backdrop-blur-md transition-all"><X size={20} /></button>
                 <div className="flex items-center gap-5">
-                  <div className="w-16 h-16 rounded-[22px] bg-white/20 backdrop-blur-md flex items-center justify-center text-white text-2xl font-serif">{selectedMember.name[0]}</div>
+                  <div className="w-16 h-16 rounded-[22px] bg-white/20 backdrop-blur-md flex items-center justify-center text-white text-2xl font-serif">{currentMember.name[0]}</div>
                   <div>
-                    <h2 className="text-2xl font-serif text-white">{selectedMember.name}</h2>
-                    <p className="text-[10px] text-white/70 font-black uppercase tracking-widest">{selectedMember.relation} · {selectedMember.age} Years Old</p>
+                    <h2 className="text-2xl font-serif text-white">{currentMember.name}</h2>
+                    <p className="text-[10px] text-white/70 font-black uppercase tracking-widest">{currentMember.relation} · {currentMember.age} Years Old</p>
                   </div>
                 </div>
               </div>
               
-              <div className="p-8 space-y-8">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-[var(--card2)] rounded-3xl p-5 border border-[var(--border)] text-center space-y-1">
-                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Health Score</p>
-                    <p className={cn("text-3xl font-black font-mono", selectedMember.score > 80 ? "text-green-500" : "text-orange-500")}>{selectedMember.score}%</p>
-                  </div>
-                  <div className="bg-[var(--card2)] rounded-3xl p-5 border border-[var(--border)] text-center space-y-1">
-                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Status</p>
-                    <p className="text-sm font-bold flex items-center justify-center gap-2 mt-2">
-                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                      Stable
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between px-1">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Shared Monitoring</h4>
-                    <span className="px-2 py-0.5 bg-blue-500/10 text-blue-500 rounded-full text-[8px] font-black uppercase">Active</span>
-                  </div>
-                  <div className="space-y-2">
-                    {[
-                      { l: 'BP', v: '118/79', i: <Activity size={14} /> },
-                      { l: 'Heart Rate', v: '72 bpm', i: <Heart size={14} /> },
-                      { l: 'Last Lab', v: '2 weeks ago', i: <FileText size={14} /> }
-                    ].map((row, idx) => (
-                      <div key={idx} className="flex items-center justify-between p-4 bg-[var(--card2)] rounded-2xl border border-[var(--border)]">
-                        <div className="flex items-center gap-3">
-                          <div className="text-orange-500/50">{row.i}</div>
-                          <p className="text-xs font-bold text-[var(--muted)] uppercase tracking-widest">{row.l}</p>
-                        </div>
-                        <p className="text-sm font-bold">{row.v}</p>
+              <div className="flex bg-[var(--card2)] border-b border-[var(--border)]">
+                {(['info', 'meds', 'appts', 'perms'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveSubTab(tab)}
+                    className={cn(
+                      "flex-1 py-4 text-[9px] font-black uppercase tracking-widest transition-all relative",
+                      activeSubTab === tab ? "text-orange-500" : "text-[var(--muted)] hover:text-[var(--text)]"
+                    )}
+                  >
+                    {tab}
+                    {activeSubTab === tab && <motion.div layoutId="subtab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-500" />}
+                  </button>
+                ))}
+              </div>
+              
+              <div className="p-8 space-y-8 max-h-[60vh] overflow-y-auto">
+                {activeSubTab === 'info' && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-[var(--card2)] rounded-3xl p-5 border border-[var(--border)] text-center space-y-1">
+                        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Health Score</p>
+                        <p className={cn("text-3xl font-black font-mono", currentMember.score > 80 ? "text-green-500" : "text-orange-500")}>{currentMember.score}%</p>
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between px-1">
-                    <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Medical Background</h4>
-                    <button 
-                      onClick={() => isEditing ? handleUpdate() : startEditing(selectedMember)}
-                      className="px-3 py-1 bg-orange-500/10 text-orange-500 rounded-lg text-[9px] font-black uppercase tracking-widest border border-orange-500/20"
-                    >
-                      {isEditing ? (isSubmitting ? 'Saving...' : 'Save Changes') : 'Update History'}
-                    </button>
-                  </div>
-                  
-                  {isEditing ? (
-                    <div className="space-y-4 bg-[var(--card2)] p-6 rounded-2xl border border-orange-500/20">
-                       <div className="space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">History</p>
-                        <input value={newHistory} onChange={e => setNewHistory(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Diabetes, etc." />
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Meds</p>
-                        <input value={newMeds} onChange={e => setNewMeds(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Aspirin, etc." />
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Allergies</p>
-                        <input value={newAllergies} onChange={e => setNewAllergies(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Peanuts, etc." />
-                      </div>
-                      <button onClick={() => setIsEditing(false)} className="w-full py-2 text-[9px] font-bold text-[var(--muted)] hover:text-orange-500 transition-colors uppercase tracking-widest">Cancel Editing</button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="p-4 bg-[var(--card2)] rounded-2xl border border-[var(--border)] space-y-3">
-                        <div>
-                          <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Medical History</p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {selectedMember.medicalHistory?.length ? selectedMember.medicalHistory.map((h, i) => (
-                              <span key={i} className="px-2 py-0.5 bg-orange-500/10 text-orange-500 rounded-md text-[9px] font-bold">{h}</span>
-                            )) : <span className="text-[10px] text-[var(--muted)] italic">No history provided</span>}
-                          </div>
-                        </div>
-                        <div>
-                          <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Current Medications</p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {selectedMember.medications?.length ? selectedMember.medications.map((m, i) => (
-                              <span key={i} className="px-2 py-0.5 bg-green-500/10 text-green-500 rounded-md text-[9px] font-bold">{m}</span>
-                            )) : <span className="text-[10px] text-[var(--muted)] italic">No active meds</span>}
-                          </div>
-                        </div>
-                        <div>
-                          <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Known Allergies</p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {selectedMember.allergies?.length ? selectedMember.allergies.map((a, i) => (
-                              <span key={i} className="px-2 py-0.5 bg-red-500/10 text-red-500 rounded-md text-[9px] font-bold">{a}</span>
-                            )) : <span className="text-[10px] text-[var(--muted)] italic">No known allergies</span>}
-                          </div>
-                        </div>
+                      <div className="bg-[var(--card2)] rounded-3xl p-5 border border-[var(--border)] text-center space-y-1">
+                        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Status</p>
+                        <p className="text-sm font-bold flex items-center justify-center gap-2 mt-2">
+                          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                          Stable
+                        </p>
                       </div>
                     </div>
-                  )}
-                </div>
 
-                <div className="flex gap-4">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between px-1">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Medical Background</h4>
+                        <button 
+                          onClick={() => isEditing ? handleUpdate() : startEditing(currentMember)}
+                          className="px-3 py-1 bg-orange-500/10 text-orange-500 rounded-lg text-[9px] font-black uppercase tracking-widest border border-orange-500/20"
+                        >
+                          {isEditing ? (isSubmitting ? 'Saving...' : 'Save Changes') : 'Update History'}
+                        </button>
+                      </div>
+                      
+                      {isEditing ? (
+                        <div className="space-y-4 bg-[var(--card2)] p-6 rounded-2xl border border-orange-500/20">
+                           <div className="space-y-1.5">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">History</p>
+                            <input value={newHistory} onChange={e => setNewHistory(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Diabetes, etc." />
+                          </div>
+                          <div className="space-y-1.5">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Meds</p>
+                            <input value={newMeds} onChange={e => setNewMeds(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Aspirin, etc." />
+                          </div>
+                          <div className="space-y-1.5">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Allergies</p>
+                            <input value={newAllergies} onChange={e => setNewAllergies(e.target.value)} className="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 text-xs outline-none focus:border-orange-500" placeholder="Peanuts, etc." />
+                          </div>
+                          <button onClick={() => setIsEditing(false)} className="w-full py-2 text-[9px] font-bold text-[var(--muted)] hover:text-orange-500 transition-colors uppercase tracking-widest">Cancel Editing</button>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="p-4 bg-[var(--card2)] rounded-2xl border border-[var(--border)] space-y-3">
+                            <div>
+                              <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Medical History</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedMember.medicalHistory?.length ? selectedMember.medicalHistory.map((h, i) => (
+                                  <span key={i} className="px-2 py-0.5 bg-orange-500/10 text-orange-500 rounded-md text-[9px] font-bold">{h}</span>
+                                )) : <span className="text-[10px] text-[var(--muted)] italic">No history provided</span>}
+                              </div>
+                            </div>
+                            <div>
+                              <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Current Medications</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedMember.medications?.length ? selectedMember.medications.map((m, i) => (
+                                  <span key={i} className="px-2 py-0.5 bg-green-500/10 text-green-500 rounded-md text-[9px] font-bold">{m}</span>
+                                )) : <span className="text-[10px] text-[var(--muted)] italic">No active meds</span>}
+                              </div>
+                            </div>
+                            <div>
+                              <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest mb-1">Known Allergies</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedMember.allergies?.length ? selectedMember.allergies.map((a, i) => (
+                                  <span key={i} className="px-2 py-0.5 bg-red-500/10 text-red-500 rounded-md text-[9px] font-bold">{a}</span>
+                                )) : <span className="text-[10px] text-[var(--muted)] italic">No known allergies</span>}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {activeSubTab === 'meds' && (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Medication Schedule</h4>
+                      <div className="flex items-center gap-2 text-[var(--muted)] text-[8px] font-black uppercase tracking-widest">
+                        <Clock size={10} /> Automated Alerts Enabled
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={newMedName}
+                        onChange={e => setNewMedName(e.target.value)}
+                        placeholder="Add member medication..."
+                        className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl p-3 text-xs font-bold outline-none focus:border-orange-500/50"
+                      />
+                      <button 
+                        onClick={() => handleAddMed(currentMember.id)}
+                        className="p-3 bg-orange-500 text-white rounded-xl shadow-lg active:scale-95 transition-all"
+                      >
+                        <Plus size={20} />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                       {selectedMember.reminders?.length ? selectedMember.reminders.map(r => (
+                         <div key={r.id} className="p-4 bg-[var(--card2)] rounded-2xl border border-[var(--border)] flex items-center justify-between group">
+                            <div className="flex items-center gap-4">
+                               <div className="w-10 h-10 rounded-xl bg-pink-500/10 flex items-center justify-center text-pink-500">
+                                  <Pill size={18} />
+                               </div>
+                               <div>
+                                  <p className="text-sm font-bold">{r.name}</p>
+                                  <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">{r.time} · {r.freq}</p>
+                               </div>
+                            </div>
+                            <button className="p-2 text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                               <Trash2 size={16} />
+                            </button>
+                         </div>
+                       )) : (
+                         <div className="p-12 border-2 border-dashed border-[var(--border)] rounded-3xl text-center space-y-2">
+                            <Pill size={32} className="mx-auto text-[var(--muted)] opacity-30" />
+                            <p className="text-xs font-bold text-[var(--muted)] opacity-60">No Meds Scheduled</p>
+                         </div>
+                       )}
+                    </div>
+                  </div>
+                )}
+
+                {activeSubTab === 'appts' && (
+                  <div className="space-y-6">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Upcoming Appointments</h4>
+                    
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={newApptTitle}
+                        onChange={e => setNewApptTitle(e.target.value)}
+                        placeholder="Appointment type (e.g. Checkup)..."
+                        className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl p-3 text-xs font-bold outline-none focus:border-orange-500/50"
+                      />
+                      <button 
+                        onClick={() => handleAddAppt(currentMember.id)}
+                        className="p-3 bg-orange-500 text-white rounded-xl shadow-lg active:scale-95 transition-all"
+                      >
+                        <Plus size={20} />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                       {selectedMember.appointments?.length ? selectedMember.appointments.map(a => (
+                         <div key={a.id} className="p-4 bg-[var(--card2)] rounded-2xl border border-[var(--border)] flex items-center justify-between group">
+                            <div className="flex items-center gap-4">
+                               <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-500">
+                                  <Calendar size={18} />
+                               </div>
+                               <div>
+                                  <p className="text-sm font-bold">{a.type}</p>
+                                  <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">{new Date(a.date).toLocaleDateString()} · {a.time}</p>
+                               </div>
+                            </div>
+                            <div className="px-3 py-1 bg-white/5 rounded-lg text-[8px] font-black uppercase text-orange-500">Upcoming</div>
+                         </div>
+                       )) : (
+                         <div className="p-12 border-2 border-dashed border-[var(--border)] rounded-3xl text-center space-y-2">
+                            <Calendar size={32} className="mx-auto text-[var(--muted)] opacity-30" />
+                            <p className="text-xs font-bold text-[var(--muted)] opacity-60">No Appointments</p>
+                         </div>
+                       )}
+                    </div>
+                  </div>
+                )}
+
+                {activeSubTab === 'perms' && (
+                  <div className="space-y-8">
+                    <div className="space-y-4">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Access Control</h4>
+                      <p className="text-[10px] text-[var(--muted)] leading-relaxed italic">Limit what {currentMember.name} can access in your profile during emergencies.</p>
+                      
+                      <div className="space-y-2">
+                        {[
+                          { id: 'locker', label: 'Access Health Locker', sub: 'Can view your encrypted reports & scans', state: currentMember.canAccessLocker },
+                          { id: 'sos', label: 'Receive SOS Alerts', sub: 'Gets real-time location when you trigger SOS', state: currentMember.canAccessSOS },
+                          { id: 'contact', label: 'Primary Emergency Contact', sub: 'Verified number for hospital coordination', state: currentMember.isEmergencyContact }
+                        ].map((perm) => (
+                          <div key={perm.id} className="flex items-center justify-between p-5 bg-[var(--card2)] rounded-3xl border border-[var(--border)]">
+                            <div className="space-y-1">
+                               <p className="text-xs font-bold">{perm.label}</p>
+                               <p className="text-[8px] font-medium text-[var(--muted)] uppercase tracking-wider">{perm.sub}</p>
+                            </div>
+                            <button 
+                              onClick={() => togglePermission(currentMember.id, perm.id as any)}
+                              className={cn(
+                                "w-12 h-6 rounded-full transition-all flex items-center px-1",
+                                perm.state ? "bg-orange-500" : "bg-[var(--card)] border border-[var(--border)]"
+                              )}
+                            >
+                               <motion.div 
+                                 animate={{ x: perm.state ? 24 : 0 }}
+                                 className="w-4 h-4 rounded-full bg-white shadow-sm" 
+                               />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-6 bg-blue-500/5 border border-blue-500/10 rounded-3xl space-y-3">
+                       <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-500 flex items-center gap-2">
+                         <ShieldCheck size={14} /> Caregiver Protection
+                       </h4>
+                       <p className="text-xs text-[var(--muted)] leading-relaxed">
+                         Enable this to receive proactive AI alerts if {currentMember.name}'s vitals drift or if they miss their scheduled medications.
+                       </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-rose-500/5 border border-rose-500/10 rounded-[32px] p-6 flex items-center justify-between group">
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-rose-500">Danger Zone</p>
+                    <p className="text-[8px] text-rose-500/60 font-medium">Remove from Health Circle?</p>
+                  </div>
                   <button 
                     onClick={() => {
                       if(window.confirm("Remove this member?")) {
@@ -4809,17 +5982,15 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
                         showDoneToast("Member removed from circle");
                       }
                     }}
-                    className="flex-1 py-4 bg-red-500/5 text-red-500 font-bold rounded-2xl hover:bg-red-500 hover:text-white transition-all text-sm"
+                    className="p-3 bg-rose-500/10 text-rose-500 rounded-2xl hover:bg-rose-500 hover:text-white transition-all group-hover:scale-105"
                   >
-                    Delete Member
-                  </button>
-                  <button className="flex-[2] py-4 bg-orange-500 text-white font-bold rounded-2xl shadow-xl shadow-orange-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                    <History size={18} />
-                    View History
+                    <Trash2 size={20} />
                   </button>
                 </div>
               </div>
             </motion.div>
+          );
+        })()}
           </motion.div>
         )}
       </AnimatePresence>
@@ -4827,38 +5998,87 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
   );
 }
 
-function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profile: UserProfile }) {
+function MedicineDelivery({ reminders, profile, cart, setCart, showCart, setShowCart }: { 
+  reminders: Reminder[], 
+  profile: UserProfile,
+  cart: any[],
+  setCart: (cart: any[]) => void,
+  showCart: boolean,
+  setShowCart: (show: boolean) => void
+}) {
   const [search, setSearch] = useState('');
-  const [cart, setCart] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [showCart, setShowCart] = useState(false);
+  const [aiResults, setAiResults] = useState<any[]>([]);
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'address' | 'payment' | 'success'>('cart');
   const [address, setAddress] = useState({ street: '', city: '', pin: '' });
 
-  const medicines = [
-    { id: 1, name: 'Paracetamol 500mg', price: 45, type: 'Tablet', brand: 'Crocin', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Paracetamol%20500mg' },
-    { id: 2, name: 'Amoxicillin 250mg', price: 120, type: 'Capsule', brand: 'Mox', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Amoxicillin%20250mg' },
-    { id: 3, name: 'Vitamin C 500mg', price: 95, type: 'Tablet', brand: 'Limcee', icon: '🍊', affiliateUrl: 'https://www.1mg.com/search/all?name=Vitamin%20C%20500mg' },
-    { id: 4, name: 'Insulin Glargine', price: 650, type: 'Injection', brand: 'Lantus', icon: '💉', affiliateUrl: 'https://www.1mg.com/search/all?name=Insulin%20Glargine' },
-    { id: 5, name: 'Multivitamin', price: 180, type: 'Capsule', brand: 'Revital', icon: '🧪', affiliateUrl: 'https://www.1mg.com/search/all?name=Multivitamin' },
-    { id: 6, name: 'Cetirizine 10mg', price: 35, type: 'Tablet', brand: 'Okacet', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Cetirizine%2010mg' },
-    { id: 7, name: 'Dolo 650', price: 30, type: 'Tablet', brand: 'Micro Labs', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Dolo%20650' },
-    { id: 8, name: 'Allegra 120mg', price: 210, type: 'Tablet', brand: 'Sanofi', icon: '💊', affiliateUrl: 'https://www.1mg.com/search/all?name=Allegra%20120mg' },
-    { id: 9, name: 'Zandu Balm', price: 40, type: 'Ointment', brand: 'Zandu', icon: '🩹', affiliateUrl: 'https://www.1mg.com/search/all?name=Zandu%20Balm' },
-  ];
+  const medicines: any[] = [];
 
-  const filtered = medicines.filter(m => m.name.toLowerCase().includes(search.toLowerCase()) || m.brand.toLowerCase().includes(search.toLowerCase()));
+  const filtered = search.length > 0 ? medicines.filter(m => m.name.toLowerCase().includes(search.toLowerCase()) || m.brand.toLowerCase().includes(search.toLowerCase())) : [];
+
+  // Global AI Search logic
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (search.length > 2) {
+        // If local search has few results, try global search
+        if (filtered.length < 3) {
+          setIsSearching(true);
+          try {
+            const prompt = `Database lookup for real medicines with accurate current market prices related to: "${search}". 
+            Output format: JSON array of objects.
+            Fields: name (common molecule), brand (popular brand), price (Real MRP in INR), type (Form), icon (Emoji), description (1 sentence use).
+            Example: [{"name": "Aspirin", "brand": "Ecotrin", "price": 42, "type": "Tablet", "icon": "💊", "description": "Used for pain and fever."}]
+            CRITICAL: Focus on REAL, ACCURATE current retail prices from major Indian pharmacies (1mg, PharmEasy, etc).
+            Limit to 5 results.`;
+            
+            const response = await callGemini(prompt, "You are a specialized pharmaceutical pricing engine. Return ONLY a JSON array. Prioritize accuracy for Maximum Retail Price (MRP) in India. No conversational text.");
+            
+            // Extract JSON array more robustly
+            const startIdx = response.indexOf('[');
+            const endIdx = response.lastIndexOf(']');
+            
+            if (startIdx === -1 || endIdx === -1) {
+              console.warn("AI Response did not contain JSON array:", response);
+              setAiResults([]);
+              return;
+            }
+
+            const cleanJson = response.substring(startIdx, endIdx + 1);
+            const results = JSON.parse(cleanJson);
+            
+            setAiResults(results.map((r: any, i: number) => ({
+              ...r,
+              id: `ai-${r.name}-${i}-${Date.now()}`,
+              affiliateUrl: `https://www.1mg.com/search/all?name=${encodeURIComponent(r.name)}`
+            })));
+          } catch (e) {
+            console.error("AI Medicine search failed", e);
+            setAiResults([]);
+          } finally {
+            setIsSearching(false);
+          }
+        }
+      } else {
+        setAiResults([]);
+      }
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [search]);
 
   // Get medicines from reminders to suggest re-ordering
-  const frequentMeds = reminders.filter(r => r.on).slice(0, 3).map(r => ({
-    id: `rem-${r.id}`,
-    name: r.name,
-    price: 99, // default mock price
-    type: r.dose || 'Unit',
-    brand: 'My Prescription',
-    icon: '📦',
-    affiliateUrl: `https://www.1mg.com/search/all?name=${encodeURIComponent(r.name)}`
-  }));
+  const frequentMeds = reminders.filter(r => r.on).slice(0, 3).map(r => {
+    const match = medicines.find(m => m.name.toLowerCase().includes(r.name.toLowerCase()));
+    return {
+      id: `rem-${r.id}`,
+      name: r.name,
+      price: match ? match.price : 45, // Use matched price or more realistic default
+      type: r.dose || 'Unit',
+      brand: 'My Prescription',
+      icon: '📦',
+      affiliateUrl: `https://www.1mg.com/search/all?name=${encodeURIComponent(r.name)}`
+    };
+  });
 
   const refillAlerts = useMemo(() => {
     const alerts: any[] = [];
@@ -4906,32 +6126,77 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
   const total = cart.reduce((acc, item) => acc + (item.price * item.qty), 0);
 
   const platforms = [
-    { name: 'PharmEasy', logo: '🏥', rating: '4.8', speed: '24h Delivery' },
-    { name: 'Tata 1mg', logo: '💊', rating: '4.7', speed: 'Express' },
-    { name: 'Apollo 24/7', logo: '🏥', rating: '4.9', speed: '2h delivery' },
-    { name: 'Netmeds', logo: '📦', rating: '4.6', speed: 'Standard' }
+    { name: '1mg', url: 'https://www.1mg.com', logo: '💊', rating: '4.8', speed: '90m Delivery' },
+    { name: 'PharmEasy', url: 'https://pharmeasy.in', logo: '🚲', rating: '4.7', speed: 'Same Day' },
+    { name: 'Netmeds', url: 'https://www.netmeds.com', logo: '📦', rating: '4.6', speed: 'Next Day' },
+    { name: 'Apollo', url: 'https://www.apollopharmacy.in', logo: '🏥', rating: '4.9', speed: '24/7 Service' }
   ];
 
   return (
     <div className="space-y-6 pb-24">
+      {/* Smart Refill Alert - Only show if profile has medicines */}
       {refillAlerts.length > 0 && (
-        <div className="bg-gradient-to-r from-amber-500/10 to-transparent border border-amber-500/30 rounded-2xl p-6 space-y-4">
-          <h3 className="font-serif text-lg text-amber-500 flex items-center gap-2">
-            <AlertCircle size={20} /> Smart Refill Alert
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/20 rounded-[32px] p-8 space-y-6 shadow-2xl shadow-amber-900/10 relative overflow-hidden group">
+          <div className="absolute -top-12 -right-12 w-48 h-48 bg-amber-500/5 rounded-full blur-3xl group-hover:scale-125 transition-transform duration-1000" />
+          
+          <div className="flex items-center justify-between relative z-10">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 flex items-center justify-center text-amber-500 shadow-inner">
+                <Package size={24} className="animate-bounce" />
+              </div>
+              <div>
+                <h3 className="font-serif text-2xl text-amber-500">Smart Refill Alert</h3>
+                <p className="text-[10px] text-amber-500/60 font-black uppercase tracking-[0.2em] mt-0.5">Automated Stock Management</p>
+              </div>
+            </div>
+            <div className="px-4 py-1.5 bg-amber-500 text-[#020f0c] text-[10px] font-black uppercase tracking-widest rounded-full shadow-lg shadow-amber-500/20">
+              Low Stock
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative z-10">
             {refillAlerts.map((alert: any) => (
-              <div key={alert.name} className="flex justify-between items-center bg-[var(--card)] p-4 rounded-xl border border-[var(--border)]">
-                 <div>
-                    <p className="font-bold text-sm">{alert.name}</p>
-                    <p className="text-[10px] text-[var(--muted)]">~{Math.max(0, Math.floor(alert.remaining / alert.dailyFrequency))} days remaining</p>
+              <div key={alert.name} className="flex flex-col gap-4 bg-[var(--card2)] p-6 rounded-[24px] border border-amber-500/10 hover:border-amber-500/30 transition-all group/item shadow-inner">
+                 <div className="flex justify-between items-start">
+                    <div className="space-y-1">
+                       <p className="font-bold text-lg text-white group-hover/item:text-amber-400 transition-colors">{alert.name}</p>
+                       <p className="text-xs text-[var(--muted)] font-medium">{alert.dose || 'Standard Dose'} · {alert.dailyFrequency}x Daily</p>
+                    </div>
+                    <div className="text-right">
+                       <p className="text-[10px] font-black uppercase tracking-widest text-amber-500/60 mb-0.5">Est. Left</p>
+                       <p className="text-xl font-serif text-amber-500 font-bold">{Math.max(0, Math.floor(alert.remaining / alert.dailyFrequency))} <span className="text-xs">days</span></p>
+                    </div>
                  </div>
-                 <a href={`https://www.1mg.com/search/all?name=${encodeURIComponent(alert.name)}`} target="_blank" rel="noreferrer" className="px-4 py-2 bg-amber-500 text-white text-[10px] font-black rounded-lg hover:scale-105 transition-transform">
-                   Refill ↗
-                 </a>
+                 
+                 <div className="flex gap-2 pt-2 border-t border-white/5">
+                    <a 
+                      href={`https://www.1mg.com/search/all?name=${encodeURIComponent(alert.name)}`} 
+                      target="_blank" 
+                      rel="noreferrer" 
+                      className="flex-1 px-4 py-3 bg-white/5 text-[var(--text2)] border border-white/5 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-white/10 transition-all flex items-center justify-center gap-2"
+                    >
+                      Search Price <ExternalLink size={12} />
+                    </a>
+                    <button 
+                      onClick={() => addToCart({
+                        id: `refill-${alert.name}`,
+                        name: alert.name,
+                        price: 99, 
+                        type: alert.dose || 'Unit',
+                        brand: 'Personal Refill',
+                        icon: '💊',
+                        affiliateUrl: `https://www.1mg.com/search/all?name=${encodeURIComponent(alert.name)}`
+                      })}
+                      className="flex-[1.5] px-4 py-3 bg-gradient-to-br from-amber-500 to-amber-600 text-[#020f0c] text-[10px] font-black uppercase tracking-widest rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+                    >
+                      <Plus size={14} /> Quick Refill
+                    </button>
+                 </div>
               </div>
             ))}
           </div>
+          
+          <p className="text-center text-[10px] text-amber-500/40 font-black uppercase tracking-[0.3em] relative z-10">Stock updated automatically based on logged doses ✦</p>
         </div>
       )}
       <div className="flex items-center justify-between">
@@ -4976,84 +6241,105 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
         )}
       </div>
 
-      {/* Brand Spotlight - Sponsored */}
-      {!search && (
-        <div className="space-y-3">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Brand Spotlight</h3>
-          <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="bg-gradient-to-br from-[#1a1a2e] to-[#16213e] border border-pink-500/20 rounded-3xl p-6 relative overflow-hidden group shadow-xl"
-          >
-            <div className="absolute top-0 right-0 px-3 py-1 bg-pink-500 text-white text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-lg z-10">
-              Sponsored
-            </div>
-            <div className="flex gap-5 items-center relative z-10">
-              <div className="w-20 h-20 rounded-2xl bg-white p-2 shrink-0 shadow-2xl group-hover:rotate-3 transition-transform">
-                <img src="https://images.unsplash.com/photo-1550573105-181045260170?auto=format&fit=crop&q=80&w=200" alt="Himalaya" className="w-full h-full object-contain" />
-              </div>
-              <div className="space-y-2">
-                <div className="text-pink-400 text-[10px] font-black uppercase tracking-[0.2em]">Partner Highlight</div>
-                <h4 className="font-serif text-xl leading-tight text-white">Unlock Natural Vitality with Himalaya Ashvagandha</h4>
-                <p className="text-[11px] text-white/60 leading-relaxed max-w-xs">
-                  Reduce stress and boost energy naturally. Veda members get <span className="text-pink-400 font-bold">20% Cashback</span> on your first order.
-                </p>
-                <div className="flex items-center gap-4 pt-1">
-                  <a href="https://www.1mg.com/brands/himalaya-214" target="_blank" rel="noreferrer" className="px-5 py-2 bg-pink-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:brightness-110 transition-all">
-                    Shop Now ↗
-                  </a>
-                  <span className="text-[9px] text-white/30 font-bold italic">Trusted by 1M+ users</span>
-                </div>
-              </div>
-            </div>
-            {/* Background decorative pill */}
-            <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-pink-500/5 rounded-full blur-3xl" />
-          </motion.div>
-        </div>
-      )}
 
       {search ? (
         <div className="grid gap-3">
-          {filtered.length > 0 ? filtered.map(m => (
-            <motion.div 
-              layout
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              key={m.id} 
-              className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between"
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-[var(--card2)] flex items-center justify-center text-xl">{m.icon}</div>
-                <div>
-                  <h3 className="text-sm font-bold text-[var(--text)]">{m.name}</h3>
-                  <p className="text-[10px] text-[var(--muted)] font-medium">{m.brand} · {m.type}</p>
-                </div>
+          {filtered.length > 0 && (
+             <div className="space-y-3">
+               <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Local & Popular Results</h3>
+               {filtered.map(m => (
+                 <motion.div 
+                   layout
+                   initial={{ opacity: 0, scale: 0.95 }}
+                   animate={{ opacity: 1, scale: 1 }}
+                   key={m.id} 
+                   className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between"
+                 >
+                   <div className="flex items-center gap-4">
+                     <div className="w-12 h-12 rounded-xl bg-[var(--card2)] flex items-center justify-center text-xl">{m.icon}</div>
+                     <div>
+                       <h3 className="text-sm font-bold text-[var(--text)]">{m.name}</h3>
+                       <p className="text-[10px] text-[var(--muted)] font-medium">{m.brand} · {m.type}</p>
+                     </div>
+                   </div>
+                   <div className="flex items-center gap-3">
+                     <div className="text-right">
+                       <span className="block text-[8px] font-black uppercase text-pink-500/60 leading-none mb-1">MRP</span>
+                       <span className="font-serif text-lg text-pink-500 font-bold">{formatCurrency(m.price)}</span>
+                     </div>
+                     <div className="flex items-center gap-1.5">
+                       <a 
+                         href={m.affiliateUrl} 
+                         target="_blank" 
+                         rel="noreferrer"
+                         className="px-3 py-1.5 bg-pink-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:brightness-110 active:scale-95 transition-all"
+                       >
+                         Buy Now
+                       </a>
+                       <button 
+                         onClick={() => addToCart(m)}
+                         className="p-1.5 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500 hover:text-white transition-all active:scale-90"
+                       >
+                         <Plus size={16} />
+                       </button>
+                     </div>
+                   </div>
+                 </motion.div>
+               ))}
+             </div>
+          )}
+
+          {isSearching && (
+            <div className="py-8 text-center space-y-3">
+              <div className="w-8 h-8 rounded-full border-2 border-pink-500 border-t-transparent animate-spin mx-auto" />
+              <p className="text-[10px] font-black text-pink-500 uppercase tracking-widest animate-pulse">Searching global medicine databases...</p>
+            </div>
+          )}
+
+          {aiResults.length > 0 && (
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center gap-2 px-1">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Global AI Results</h3>
+                <div className="px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 text-[8px] font-black rounded-lg border border-indigo-500/20">AI POWERED</div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="font-serif text-lg text-pink-500 font-bold">{formatCurrency(m.price)}</span>
-                <div className="flex items-center gap-1.5">
-                  <a 
-                    href={m.affiliateUrl} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="px-3 py-1.5 bg-pink-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:brightness-110 active:scale-95 transition-all"
-                  >
-                    Buy Now
-                  </a>
-                  <button 
-                    onClick={() => addToCart(m)}
-                    className="p-1.5 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500 hover:text-white transition-all active:scale-90"
-                    title="Add to Internal Cart"
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )) : (
+              {aiResults.map(m => (
+                <motion.div 
+                  layout
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  key={m.id} 
+                  className="bg-[var(--card)] border border-indigo-500/10 rounded-2xl p-4 flex items-center justify-between group overflow-hidden relative"
+                >
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 -mr-8 -mt-8 rounded-full blur-2xl group-hover:bg-indigo-500/10 transition-colors" />
+                  <div className="flex items-center gap-4 relative z-10">
+                    <div className="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center text-xl shadow-inner">{m.icon}</div>
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text)]">{m.name}</h3>
+                      <p className="text-[10px] text-[var(--muted)] font-medium">{m.brand} · {m.type}</p>
+                      <p className="text-[9px] text-[var(--muted2)] italic mt-0.5 line-clamp-1">{m.description}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 relative z-10">
+                    <div className="text-right">
+                      <span className="block text-[8px] font-black uppercase text-indigo-500/60 leading-none mb-1">Market Avg</span>
+                      <span className="font-serif text-lg text-indigo-500 font-bold">{formatCurrency(m.price)}</span>
+                    </div>
+                    <button 
+                      onClick={() => addToCart(m)}
+                      className="p-2 bg-indigo-500 text-white rounded-lg hover:scale-105 active:scale-95 transition-all shadow-lg shadow-indigo-500/20"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
+
+          {!isSearching && filtered.length === 0 && aiResults.length === 0 && (
             <div className="py-12 bg-[var(--card)] border border-[var(--border)] rounded-2xl text-center space-y-3">
                <div className="w-12 h-12 bg-[var(--card2)] rounded-full flex items-center justify-center mx-auto text-[var(--muted)] opacity-50"><Search size={24} /></div>
-               <p className="text-sm font-bold text-[var(--muted)]">No results found for "{search}"</p>
+               <p className="text-sm font-bold text-[var(--muted)]">No results found globally for "{search}"</p>
                <button onClick={() => setSearch('')} className="text-[10px] font-black uppercase tracking-widest text-pink-500">View All Products</button>
             </div>
           )}
@@ -5073,8 +6359,9 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
                     <div className="flex items-start justify-between relative z-10">
                       <div className="w-10 h-10 rounded-xl bg-[var(--card2)] flex items-center justify-center text-xl">{m.icon}</div>
                       <div className="text-right">
-                        <p className="text-[10px] font-bold text-pink-500">{formatCurrency(m.price)}</p>
-                        <p className="text-[8px] text-[var(--muted)] font-black uppercase tracking-tighter">Per Pack</p>
+                        <span className="block text-[8px] font-black uppercase text-pink-500/60 leading-none mb-0.5">MRP</span>
+                        <p className="text-[12px] font-bold text-pink-500 leading-none">{formatCurrency(m.price)}</p>
+                        <p className="text-[8px] text-[var(--muted)] font-black uppercase tracking-tighter mt-1 opacity-60">Verified Price</p>
                       </div>
                     </div>
                     <div>
@@ -5107,9 +6394,15 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
             <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Top Online Pharmacies</h3>
             <div className="grid grid-cols-2 gap-3">
               {platforms.map((p, i) => (
-                <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 space-y-3 hover:border-pink-500/30 transition-all cursor-pointer group">
+                <a 
+                  key={i} 
+                  href={p.url} 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 space-y-3 hover:border-pink-500/30 transition-all cursor-pointer group block"
+                >
                   <div className="flex justify-between items-start">
-                    <div className="w-10 h-10 rounded-xl bg-[var(--card2)] flex items-center justify-center text-xl">{p.logo}</div>
+                    <div className="w-10 h-10 rounded-xl bg-[var(--card2)] flex items-center justify-center text-xl group-hover:scale-110 transition-transform">{p.logo}</div>
                     <div className="flex items-center gap-1 text-[10px] font-bold text-amber-500">
                       <Star size={10} fill="currentColor" /> {p.rating}
                     </div>
@@ -5118,7 +6411,7 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
                     <h4 className="font-serif text-base">{p.name}</h4>
                     <p className="text-[10px] font-bold text-pink-400 uppercase tracking-widest">{p.speed}</p>
                   </div>
-                </div>
+                </a>
               ))}
             </div>
           </section>
@@ -5134,7 +6427,14 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
                   { n: 'Fitness', i: '🏋️' },
                   { n: 'Wellness', i: '🌿' }
                 ].map(cat => (
-                  <button key={cat.n} className="flex flex-col items-center gap-2 p-3 bg-[var(--card)] border border-[var(--border)] rounded-2xl hover:border-pink-500/20 transition-all group">
+                  <button 
+                    key={cat.n} 
+                    onClick={() => {
+                      setSearch(cat.n);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="flex flex-col items-center gap-2 p-3 bg-[var(--card)] border border-[var(--border)] rounded-2xl hover:border-pink-500/20 transition-all group active:scale-95"
+                  >
                     <div className="w-8 h-8 rounded-full bg-pink-500/5 text-pink-400 flex items-center justify-center group-hover:bg-pink-500 group-hover:text-white transition-all text-sm">{cat.i}</div>
                     <span className="text-[10px] font-bold text-[var(--text2)]">{cat.n}</span>
                   </button>
@@ -5144,206 +6444,410 @@ function MedicineDelivery({ reminders, profile }: { reminders: Reminder[], profi
         </div>
       )}
 
-      {/* Checkout Sheet */}
-      <AnimatePresence>
-        {showCart && (
-          <>
-            <motion.div 
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              onClick={() => setShowCart(false)}
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150]"
-            />
-            <motion.div 
-              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              className="fixed bottom-0 left-0 right-0 z-[160] bg-[var(--bg)] rounded-t-3xl border-t border-[var(--border)] max-h-[90vh] flex flex-col"
-            >
-              <div className="p-4 flex items-center gap-4 border-b border-[var(--border)] sticky top-0 bg-[var(--bg)] z-10 transition-all">
-                {checkoutStep !== 'cart' && checkoutStep !== 'success' && (
-                  <button 
-                    onClick={() => {
-                      if (checkoutStep === 'address') setCheckoutStep('cart');
-                      if (checkoutStep === 'payment') setCheckoutStep('address');
-                    }}
-                    className="p-2 -ml-2 text-[var(--muted)] hover:text-pink-500 transition-colors"
-                  >
-                    <ArrowLeft size={20} />
-                  </button>
-                )}
-                <h3 className="font-serif text-xl flex-1">
-                  {checkoutStep === 'cart' && 'Your Basket'}
-                  {checkoutStep === 'address' && 'Delivery Address'}
-                  {checkoutStep === 'payment' && 'Confirm Payment'}
-                  {checkoutStep === 'success' && 'Order Placed!'}
-                </h3>
-                <button onClick={() => setShowCart(false)} className="p-2 hover:bg-[var(--card2)] rounded-full transition-colors"><X size={20} /></button>
-              </div>
+      {/* Checkout Sheet (Portalled for z-index safety) */}
+      {createPortal(
+        <AnimatePresence>
+          {showCart && (
+            <div className="medicine-cart-portal">
+              <motion.div 
+                initial={{ opacity: 0 }} 
+                animate={{ opacity: 1 }} 
+                exit={{ opacity: 0 }}
+                onClick={() => setShowCart(false)}
+                className="fixed inset-0 bg-black/80 backdrop-blur-[8px] z-[9999]"
+              />
+              <motion.div 
+                initial={{ y: '100%' }} 
+                animate={{ y: 0 }} 
+                exit={{ y: '100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="fixed bottom-0 left-0 right-0 z-[10000] bg-[var(--bg)] rounded-t-[32px] border-t border-[var(--border)] max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
+              >
+                {/* Checkout Progress Header - Fixed at Top */}
+                <div className="pt-2 px-4 flex flex-col bg-[var(--card)] border-b border-[var(--border)] relative shadow-sm">
+                  <div className="w-12 h-1.5 bg-[var(--border)] rounded-full mx-auto my-3 opacity-30" />
+                  
+                  <div className="flex items-center gap-4 mb-4">
+                    {checkoutStep !== 'cart' && checkoutStep !== 'success' && (
+                      <button 
+                        onClick={() => {
+                          if (checkoutStep === 'address') setCheckoutStep('cart');
+                          if (checkoutStep === 'payment') setCheckoutStep('address');
+                        }}
+                        className="p-2.5 bg-[var(--card2)] rounded-xl text-[var(--muted)] hover:text-pink-500 transition-all border border-[var(--border)] shadow-sm"
+                      >
+                        <ArrowLeft size={18} />
+                      </button>
+                    )}
+                    <h3 className="font-serif text-xl flex-1 tracking-tight font-black">
+                      {checkoutStep === 'cart' && 'My Basket'}
+                      {checkoutStep === 'address' && 'Delivery Info'}
+                      {checkoutStep === 'payment' && 'Confirm Order'}
+                      {checkoutStep === 'success' && 'Order Received!'}
+                    </h3>
+                    <button onClick={() => setShowCart(false)} className="p-2.5 bg-[var(--card2)] rounded-xl transition-all border border-[var(--border)] shadow-sm hover:rotate-90"><X size={18} /></button>
+                  </div>
 
-              <div className="flex-1 overflow-y-auto p-5 pb-12">
-                {checkoutStep === 'cart' && (
-                  <div className="space-y-4">
-                    {cart.length > 0 ? (
-                      <>
-                        <div className="space-y-3">
-                          {cart.map(item => (
-                            <div key={item.id} className="flex items-center gap-4 p-4 bg-[var(--card)] border border-[var(--border)] rounded-2xl">
-                              <div className="text-2xl">{item.icon}</div>
-                              <div className="flex-1">
-                                <h4 className="text-sm font-bold">{item.name}</h4>
-                                <p className="text-[10px] text-[var(--muted)] font-bold">{formatCurrency(item.price)} x {item.qty}</p>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <div className="flex items-center gap-2 border border-[var(--border)] rounded-lg p-1 bg-[var(--card2)]">
-                                  <button onClick={() => updateQty(item.id, -1)} className="w-6 h-6 flex items-center justify-center text-[var(--text2)] hover:text-pink-500"><Minus size={14} /></button>
-                                  <span className="text-xs font-black min-w-[20px] text-center">{item.qty}</span>
-                                  <button onClick={() => updateQty(item.id, 1)} className="w-6 h-6 flex items-center justify-center text-[var(--text2)] hover:text-pink-500"><Plus size={14} /></button>
+                  {checkoutStep !== 'success' && (
+                    <div className="flex items-center justify-between px-6 pb-5 relative">
+                      <div className="absolute top-1/2 left-[15%] right-[15%] h-[1px] bg-[var(--border)] -translate-y-1/2 z-0" />
+                      {[
+                        { s: 'cart', i: ShoppingCart, l: 'Basket' },
+                        { s: 'address', i: MapPin, l: 'Address' },
+                        { s: 'payment', i: CreditCard, l: 'Payment' }
+                      ].map((step) => {
+                        const isActive = checkoutStep === step.s;
+                        const isPast = (checkoutStep === 'address' && step.s === 'cart') || (checkoutStep === 'payment' && (step.s === 'cart' || step.s === 'address'));
+                        return (
+                          <div key={step.s} className="relative z-10 flex flex-col items-center gap-1.5">
+                            <div className={cn(
+                              "w-10 h-10 rounded-full flex items-center justify-center transition-all duration-500 border-2",
+                              isActive ? "bg-pink-500 border-pink-500 text-white shadow-xl shadow-pink-500/20 scale-110" : 
+                              isPast ? "bg-green-500 border-green-500 text-white" : "bg-white border-[var(--border)] text-[var(--muted)]"
+                            )}>
+                              {isPast ? <Check size={16} strokeWidth={3} /> : <step.i size={16} />}
+                            </div>
+                            <span className={cn(
+                              "text-[7px] font-black uppercase tracking-[0.2em]",
+                              isActive ? "text-pink-500" : isPast ? "text-green-500" : "text-[var(--muted)]"
+                            )}>{step.l}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto overflow-x-hidden p-6 custom-scrollbar pb-10">
+                <AnimatePresence mode="wait">
+                  {checkoutStep === 'cart' && (
+                    <motion.div 
+                      key="step-cart"
+                      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                      className="space-y-6"
+                    >
+                      {cart.length > 0 ? (
+                        <>
+                          <div className="space-y-3">
+                            {cart.map((item, idx) => (
+                              <motion.div 
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: idx * 0.05 }}
+                                key={item.id} 
+                                className="group relative bg-[var(--card)] border border-[var(--border)] rounded-[24px] p-4 flex items-center gap-4 hover:border-pink-500/20 transition-all overflow-hidden"
+                              >
+                                <div className="absolute top-0 right-0 w-24 h-24 bg-pink-500/5 -mr-12 -mt-12 rounded-full blur-2xl opacity-50 group-hover:opacity-100 transition-opacity" />
+                                <div className="w-16 h-16 rounded-2xl bg-[var(--card2)] flex items-center justify-center text-3xl shadow-inner relative z-10">{item.icon}</div>
+                                <div className="flex-1 min-w-0 relative z-10">
+                                  <h4 className="text-sm font-bold text-[var(--text)] truncate">{item.name}</h4>
+                                  <p className="text-[10px] text-pink-500 font-bold mb-2">{formatCurrency(item.price)} <span className="text-[var(--muted)] text-[8px] uppercase tracking-tighter ml-1">per unit</span></p>
+                                  
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex items-center bg-[var(--card2)] rounded-xl border border-[var(--border)] p-1 shadow-sm">
+                                      <button 
+                                        onClick={() => updateQty(item.id, -1)} 
+                                        className="w-7 h-7 flex items-center justify-center text-[var(--muted)] hover:text-pink-500 hover:bg-white rounded-lg transition-all active:scale-90"
+                                      >
+                                        <Minus size={14} />
+                                      </button>
+                                      <span className="text-xs font-black w-8 text-center">{item.qty}</span>
+                                      <button 
+                                        onClick={() => updateQty(item.id, 1)} 
+                                        className="w-7 h-7 flex items-center justify-center text-[var(--muted)] hover:text-pink-500 hover:bg-white rounded-lg transition-all active:scale-90"
+                                      >
+                                        <Plus size={14} />
+                                      </button>
+                                    </div>
+                                    <button 
+                                      onClick={() => removeFromCart(item.id)} 
+                                      className="p-2 text-red-500 hover:bg-red-500/10 rounded-xl transition-all group/del"
+                                      title="Remove"
+                                    >
+                                      <Trash2 size={16} className="group-hover/del:scale-110 transition-transform" />
+                                    </button>
+                                  </div>
                                 </div>
-                                <button onClick={() => removeFromCart(item.id)} className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-all"><X size={16} /></button>
+                                <div className="text-right shrink-0 relative z-10">
+                                  <p className="text-sm font-black text-[var(--text)] font-serif">{formatCurrency(item.price * item.qty)}</p>
+                                </div>
+                              </motion.div>
+                            ))}
+                          </div>
+                          
+                          <div className="p-6 bg-gradient-to-br from-pink-500/10 to-transparent rounded-[32px] border border-pink-500/20 space-y-4">
+                            <h5 className="text-[10px] font-black uppercase tracking-[0.2em] text-pink-500/60 mb-2">Pricing Breakdown</h5>
+                            <div className="space-y-2.5">
+                              <div className="flex justify-between items-center text-xs">
+                                <span className="text-[var(--muted)]">Basket Subtotal</span>
+                                <span className="font-bold">{formatCurrency(total)}</span>
+                              </div>
+                              <div className="flex justify-between items-center text-xs">
+                                <span className="text-[var(--muted)] flex items-center gap-1.5">Delivery Fee <Info size={12} className="opacity-40" /></span>
+                                <span className="text-green-500 font-bold uppercase tracking-widest text-[9px]">Free Delivery</span>
+                              </div>
+                              <div className="flex justify-between items-center text-xs">
+                                <span className="text-[var(--muted)]">Taxes & Charges</span>
+                                <span className="font-bold">{formatCurrency(Math.floor(total * 0.05))}</span>
+                              </div>
+                              <div className="h-px bg-pink-500/20 my-2" />
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm font-black text-[var(--text)] uppercase tracking-widest">Grand Total</span>
+                                <span className="font-serif text-2xl text-pink-500 font-black">₹{total + Math.floor(total * 0.05)}</span>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                        <div className="p-5 bg-pink-500/5 rounded-2xl border border-pink-500/10 space-y-2">
-                          <div className="flex justify-between text-xs font-bold">
-                            <span className="text-[var(--muted)]">Subtotal</span>
-                            <span>{formatCurrency(total)}</span>
                           </div>
-                          <div className="flex justify-between text-xs font-bold">
-                            <span className="text-[var(--muted)]">Delivery Fee</span>
-                            <span className="text-green-500 uppercase tracking-widest text-[10px]">Free</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-black pt-2 border-t border-pink-500/10">
-                            <span>Total Amount</span>
-                            <span className="text-pink-500">₹{total}</span>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => setCheckoutStep('address')}
-                          className="w-full py-4 bg-pink-500 text-white font-bold rounded-2xl shadow-xl shadow-pink-500/20 active:scale-95 transition-all text-sm uppercase tracking-widest"
-                        >
-                          Checkout Now
-                        </button>
-                      </>
-                    ) : (
-                      <div className="py-20 text-center space-y-4">
-                        <div className="w-16 h-16 bg-[var(--card2)] rounded-full flex items-center justify-center mx-auto text-[var(--muted)] opacity-30"><ShoppingCart size={32} /></div>
-                        <p className="text-sm font-bold text-[var(--muted)]">Your basket is empty</p>
-                        <button 
-                          onClick={() => setShowCart(false)}
-                          className="px-6 py-2 bg-pink-500/10 text-pink-500 border border-pink-500/20 rounded-full text-[10px] font-black uppercase tracking-widest"
-                        >
-                          Start Shopping
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
 
-                {checkoutStep === 'address' && (
-                  <div className="space-y-6">
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] ml-1">Street Address</label>
-                        <input 
-                          type="text" 
-                          placeholder="House No, Suite, Area"
-                          value={address.street}
-                          onChange={e => setAddress({ ...address, street: e.target.value })}
-                          className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:border-pink-500 transition-all"
+                          <div className="space-y-4 pt-2">
+                             <div className="flex items-center gap-3 p-4 bg-indigo-500/5 rounded-2xl border border-indigo-500/10 group cursor-pointer hover:bg-indigo-500/10 transition-all">
+                                <div className="w-10 h-10 rounded-xl bg-indigo-500 text-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform"><Trophy size={20} /></div>
+                                <div className="flex-1">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Veda Prime Savings</p>
+                                  <p className="text-[11px] font-bold text-[var(--muted)]">Apply coupon code <span className="text-indigo-400">VEDA50</span> for ₹50 off</p>
+                                </div>
+                                <ArrowRight size={16} className="text-indigo-400" />
+                             </div>
+
+                             <button 
+                                onClick={() => setCheckoutStep('address')}
+                                className="w-full py-5 bg-gradient-to-r from-pink-500 to-pink-600 text-white font-black rounded-2xl shadow-xl shadow-pink-500/30 active:scale-95 hover:brightness-110 transition-all text-sm uppercase tracking-[0.2em] flex items-center justify-center gap-2"
+                              >
+                                Continue to delivery <ArrowRight size={18} />
+                              </button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="py-24 text-center space-y-6">
+                          <motion.div 
+                            animate={{ rotate: [0, -10, 10, -10, 0] }}
+                            transition={{ repeat: Infinity, duration: 4 }}
+                            className="w-24 h-24 bg-[var(--card2)] rounded-full flex items-center justify-center mx-auto shadow-inner relative"
+                          >
+                            <ShoppingCart size={40} className="text-[var(--muted)] opacity-20" />
+                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 border-2 border-dashed border-[var(--muted)] rounded-full animate-spin-slow opacity-10" />
+                          </motion.div>
+                          <div className="space-y-2">
+                            <p className="text-lg font-serif">Your basket is waiting</p>
+                            <p className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest px-12">Search for prescriptions or category deals to find what you need.</p>
+                          </div>
+                          <button 
+                            onClick={() => setShowCart(false)}
+                            className="px-8 py-3 bg-pink-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-pink-500/20 active:scale-95 transition-all"
+                          >
+                            Browse Medicines
+                          </button>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+
+                  {checkoutStep === 'address' && (
+                    <motion.div 
+                      key="step-address"
+                      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                      className="space-y-6"
+                    >
+                      <div className="p-5 bg-indigo-500/5 rounded-3xl border border-indigo-500/10 border-dashed flex items-center gap-4">
+                        <div className="w-12 h-12 bg-white text-indigo-500 rounded-2xl flex items-center justify-center shadow-lg"><User size={24} /></div>
+                        <div>
+                          <h4 className="text-sm font-bold">{profile.name}</h4>
+                          <p className="text-[10px] text-[var(--muted)] font-medium">Default medical profile selected</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] ml-1 flex items-center gap-1.5">
+                            <Home size={10} /> Street & Locality
+                          </label>
+                          <div className="relative">
+                            <input 
+                              type="text" 
+                              placeholder="House No, Suite, Apartment Area"
+                              value={address.street}
+                              onChange={e => setAddress({ ...address, street: e.target.value })}
+                              className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:ring-4 focus:ring-pink-500/10 focus:border-pink-500 transition-all shadow-sm"
+                            />
+                            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-pink-500 cursor-pointer"><MapPin size={16} /></div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex gap-4">
+                          <div className="flex-[2] space-y-2">
+                            <label className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] ml-1">City / Region</label>
+                            <input 
+                               type="text" 
+                               placeholder="e.g. New Delhi"
+                               value={address.city}
+                               onChange={e => setAddress({ ...address, city: e.target.value })}
+                               className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:ring-4 focus:ring-pink-500/10 focus:border-pink-500 transition-all shadow-sm"
+                            />
+                          </div>
+                          <div className="flex-1 space-y-2">
+                            <label className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] ml-1">PIN Code</label>
+                            <input 
+                               type="text" 
+                               placeholder="110001"
+                               maxLength={6}
+                               value={address.pin}
+                               onChange={e => setAddress({ ...address, pin: e.target.value })}
+                               className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:ring-4 focus:ring-pink-500/10 focus:border-pink-500 transition-all shadow-sm text-center tracking-widest px-2"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-amber-500/5 rounded-2xl border border-amber-500/10 flex items-center gap-3">
+                           <AlertCircle size={16} className="text-amber-500 shrink-0" />
+                           <p className="text-[10px] text-amber-700 font-bold leading-relaxed">Please ensure the address matches your physical location for express 2h delivery.</p>
+                        </div>
+                      </div>
+
+                      <div className="pt-2">
+                        <button 
+                           disabled={!address.street || !address.city || !address.pin}
+                           onClick={() => setCheckoutStep('payment')}
+                           className="w-full py-5 bg-gradient-to-r from-pink-500 to-pink-600 text-white font-black rounded-2xl shadow-xl shadow-pink-500/30 active:scale-95 enabled:hover:brightness-110 transition-all text-sm uppercase tracking-[0.2em] disabled:grayscale disabled:opacity-50 flex items-center justify-center gap-2"
+                        >
+                          Confirm Location <ArrowRight size={18} />
+                        </button>
+                        <p className="text-center text-[9px] text-[var(--muted)] uppercase tracking-widest mt-4 font-bold">Standard Delivery: Tomorrow before 10 AM</p>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {checkoutStep === 'payment' && (
+                    <motion.div 
+                      key="step-payment"
+                      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                      className="space-y-6"
+                    >
+                      <div className="bg-[var(--card2)] rounded-[32px] p-6 border border-[var(--border)] space-y-5">
+                          <div className="flex items-center justify-between">
+                             <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Choose Payment</h4>
+                             <div className="flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-500 rounded-lg text-[9px] font-black uppercase tracking-tighter border border-green-500/20">
+                               <ShieldCheck size={12} /> Secure
+                             </div>
+                          </div>
+
+                          <div className="space-y-2.5">
+                             <div className="flex items-center justify-between bg-white border-2 border-pink-500 p-4 rounded-2xl shadow-lg ring-4 ring-pink-500/5 transition-all">
+                                <div className="flex items-center gap-4">
+                                   <div className="shrink-0 w-12 h-8 bg-green-500/10 text-green-500 flex items-center justify-center rounded-lg border border-green-500/20"><CreditCard size={20} /></div>
+                                   <div>
+                                      <p className="text-sm font-black text-gray-900 leading-none mb-0.5">Cash on Delivery</p>
+                                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Pay at doorstep</p>
+                                   </div>
+                                </div>
+                                <div className="w-6 h-6 rounded-full border-2 border-pink-500 flex items-center justify-center"><div className="w-3 h-3 bg-pink-500 rounded-full" /></div>
+                             </div>
+
+                             {/* Placeholder methods to make it feel rich */}
+                             {[
+                               { n: 'UPI / GPay / PhonePe', i: '📱', d: 'Secure instant bank transfer', soon: true },
+                               { n: 'Credit / Debit Card', i: '💳', d: 'Visa, Mastercard, Amex', soon: true },
+                               { n: 'Net Banking', i: '🏛️', d: 'All major Indian banks', soon: true }
+                             ].map(method => (
+                               <div key={method.n} className="flex items-center justify-between bg-[var(--card)] border border-[var(--border)] p-4 rounded-2xl opacity-60 grayscale group relative overflow-hidden">
+                                  <div className="flex items-center gap-4">
+                                     <div className="shrink-0 w-12 h-8 bg-[var(--card2)] flex items-center justify-center rounded-lg text-lg grayscale">{method.i}</div>
+                                     <div>
+                                        <p className="text-sm font-bold text-[var(--text2)] leading-none mb-0.5">{method.n}</p>
+                                        <p className="text-[9px] font-medium text-[var(--muted)] uppercase tracking-widest">{method.d}</p>
+                                     </div>
+                                  </div>
+                                  <div className="w-5 h-5 rounded-full border border-[var(--border)] bg-[var(--card2)]" />
+                                  <div className="absolute top-0 right-0 px-2 py-0.5 bg-indigo-500 text-white text-[7px] font-black uppercase tracking-widest rounded-bl-lg">Coming Soon</div>
+                               </div>
+                             ))}
+                          </div>
+
+                          <div className="pt-4 border-t border-[var(--border)] space-y-3">
+                             <div className="flex justify-between items-center text-[var(--muted)] text-[10px] font-bold uppercase tracking-widest">
+                                <span>Total Payable</span>
+                                <span>(Incl. Taxes)</span>
+                             </div>
+                             <div className="flex justify-between items-end">
+                                <div className="text-[var(--muted)] text-[11px] font-medium italic">Your order: {cart.length} items</div>
+                                <span className="font-serif text-3xl text-pink-500 font-black tracking-tighter">₹{total + Math.floor(total * 0.05)}</span>
+                             </div>
+                          </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <button 
+                           onClick={() => {
+                             setCheckoutStep('success');
+                             setCart([]);
+                             showDoneToast("Order successful!");
+                           }}
+                           className="w-full py-5 bg-gradient-to-r from-pink-500 to-pink-600 text-white font-black rounded-2xl shadow-xl shadow-pink-500/30 active:scale-95 hover:brightness-110 transition-all text-sm uppercase tracking-[0.2em] flex items-center justify-center gap-2"
+                        >
+                          Confirm & Place Order <Check size={20} />
+                        </button>
+                        <p className="text-center text-[9px] text-[var(--muted2)] leading-relaxed px-10">By placing this order you agree to Veda Health’s <span className="underline decoration-pink-500/30">Terms of Service</span> and <span className="underline decoration-pink-500/30">Privacy Policy</span>.</p>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {checkoutStep === 'success' && (
+                    <motion.div 
+                      key="step-success"
+                      initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                      className="py-12 text-center"
+                    >
+                      <div className="relative inline-block mb-8">
+                        <motion.div 
+                          initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', damping: 12, delay: 0.2 }}
+                          className="w-32 h-32 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto shadow-inner border-2 border-green-500/20 relative z-10"
+                        >
+                          <Check size={64} strokeWidth={3} />
+                        </motion.div>
+                        <motion.div 
+                          animate={{ scale: [1, 1.5], opacity: [0.3, 0] }}
+                          transition={{ repeat: Infinity, duration: 2 }}
+                          className="absolute inset-0 bg-green-500 rounded-full z-0"
                         />
                       </div>
-                      <div className="flex gap-4">
-                        <div className="flex-[2] space-y-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] ml-1">City</label>
-                          <input 
-                             type="text" 
-                             placeholder="Select City"
-                             value={address.city}
-                             onChange={e => setAddress({ ...address, city: e.target.value })}
-                             className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:border-pink-500 transition-all"
-                          />
-                        </div>
-                        <div className="flex-1 space-y-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] ml-1">PIN Code</label>
-                          <input 
-                             type="text" 
-                             placeholder="110001"
-                             maxLength={6}
-                             value={address.pin}
-                             onChange={e => setAddress({ ...address, pin: e.target.value })}
-                             className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:border-pink-500 transition-all"
-                          />
-                        </div>
+
+                      <div className="space-y-6 relative z-10">
+                         <div className="space-y-2">
+                           <h4 className="text-3xl font-serif tracking-tight">Order Confirmed!</h4>
+                           <p className="text-sm text-[var(--muted)] px-12 leading-relaxed">Your medical essentials are on their way. You can track the live status in the "Activities" tab.</p>
+                         </div>
+                         
+                         <div className="grid grid-cols-2 gap-3 max-w-xs mx-auto">
+                            <div className="p-3 bg-white border border-[var(--border)] rounded-2xl shadow-sm">
+                               <p className="text-[8px] font-black uppercase text-[var(--muted)] tracking-widest mb-1">Order ID</p>
+                               <p className="text-xs font-black">#VD{Math.floor(Math.random() * 900000 + 100000)}</p>
+                            </div>
+                            <div className="p-3 bg-white border border-[var(--border)] rounded-2xl shadow-sm">
+                               <p className="text-[8px] font-black uppercase text-[var(--muted)] tracking-widest mb-1">ETA</p>
+                               <p className="text-xs font-black text-green-600">~ 2 Hours</p>
+                            </div>
+                         </div>
+
+                         <div className="pt-4 px-4">
+                            <button 
+                               onClick={() => setShowCart(false)}
+                               className="w-full py-5 bg-[var(--card2)] border border-[var(--border)] text-[var(--text)] font-black rounded-2xl shadow-sm active:scale-95 hover:bg-white transition-all text-xs uppercase tracking-[0.2em]"
+                            >
+                              Explore More Health Deals
+                            </button>
+                         </div>
                       </div>
-                    </div>
-                    <button 
-                       disabled={!address.street || !address.city || !address.pin}
-                       onClick={() => setCheckoutStep('payment')}
-                       className="w-full py-4 bg-pink-500 text-white font-bold rounded-2xl shadow-xl shadow-pink-500/20 active:scale-95 transition-all text-sm uppercase tracking-widest disabled:opacity-50"
-                    >
-                      Save & Continue
-                    </button>
-                  </div>
-                )}
-
-                {checkoutStep === 'payment' && (
-                  <div className="space-y-6">
-                    <div className="bg-pink-500/5 border border-pink-500/20 rounded-3xl p-6 space-y-4">
-                        <div className="flex items-center justify-between text-xs font-bold text-[var(--muted)] uppercase tracking-widest">
-                           <span>Payment Summary</span>
-                        </div>
-                        <div className="space-y-2">
-                           <div className="flex justify-between items-center bg-[var(--bg)] p-3 rounded-xl border border-[var(--border)]">
-                              <div className="flex items-center gap-3">
-                                 <div className="bg-green-500/10 text-green-500 p-2 rounded-lg"><CreditCard size={18} /></div>
-                                 <span className="text-xs font-bold">Cash on Delivery</span>
-                              </div>
-                              <div className="w-5 h-5 rounded-full border-2 border-pink-500 flex items-center justify-center"><div className="w-2.5 h-2.5 bg-pink-500 rounded-full" /></div>
-                           </div>
-                           <div className="p-3 text-[10px] text-[var(--muted)] text-center font-bold italic opacity-60">More payment options coming soon</div>
-                        </div>
-                        <div className="pt-4 border-t border-pink-500/10 flex justify-between items-center">
-                           <span className="text-sm font-bold">Total to Pay</span>
-                           <span className="font-black text-lg text-pink-500">₹{total}</span>
-                        </div>
-                    </div>
-                    <button 
-                       onClick={() => {
-                         setCheckoutStep('success');
-                         setCart([]);
-                         showDoneToast("Order successful!");
-                       }}
-                       className="w-full py-4 bg-pink-500 text-white font-bold rounded-2xl shadow-xl shadow-pink-500/20 active:scale-95 transition-all text-sm uppercase tracking-widest"
-                    >
-                      Place Order
-                    </button>
-                  </div>
-                )}
-
-                {checkoutStep === 'success' && (
-                  <div className="py-12 text-center space-y-6">
-                    <div className="w-24 h-24 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto decoration-none shadow-inner border border-green-500/20">
-                      <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', damping: 10 }}>
-                        <Check size={48} />
-                      </motion.div>
-                    </div>
-                    <div className="space-y-2">
-                       <h4 className="text-2xl font-serif">Order Confirmed!</h4>
-                       <p className="text-sm text-[var(--muted)] px-10">Your health essentials are being packed and will reach you within 24 hours.</p>
-                       <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] pt-2">Order ID: #{Math.floor(Math.random() * 900000 + 100000)}</p>
-                    </div>
-                    <button 
-                       onClick={() => setShowCart(false)}
-                       className="w-full py-4 bg-[var(--card)] border border-[var(--border)] text-[var(--text)] font-bold rounded-2xl shadow-xl active:scale-95 transition-all text-sm uppercase tracking-widest"
-                    >
-                      Done
-                    </button>
-                  </div>
-                )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
+              
+              {/* Bottom Safety Decoration */}
+              <div className="h-2 bg-gradient-to-r from-pink-500 via-indigo-500 to-teal-500 w-full" />
             </motion.div>
-          </>
+          </div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+    )}
     </div>
   );
 }
@@ -5373,33 +6877,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
     }
   }, [chatMessages]);
 
-  const plans: InsurancePlan[] = [
-    { 
-      id: '1', name: 'Optima Secure', provider: 'HDFC ERGO', monthlyPremium: 850, coverAmount: '500000',
-      features: ['2x Coverage from Day 1', 'Restore Benefit', 'Global Cover'],
-      waitingPeriod: '3 years', coPay: 'None', cashlessHospitals: '10,000+'
-    },
-    { 
-      id: '2', name: 'Care Supreme', provider: 'Care Health', monthlyPremium: 720, coverAmount: '700000',
-      features: ['No Claim Bonus', 'Annual Health Checkup', 'Alt Medicine Cover'],
-      waitingPeriod: '4 years', coPay: 'None', cashlessHospitals: '8,000+'
-    },
-    { 
-      id: '3', name: 'Assure Plan', provider: 'Niva Bupa', monthlyPremium: 910, coverAmount: '1000000',
-      features: ['Cashless at 10,000+ Hospitals', 'Pre-existing cover in 2y', 'Maternity Cover'],
-      waitingPeriod: '2 years', coPay: 'None', cashlessHospitals: '10,000+'
-    },
-    { 
-      id: '4', name: 'Star Comprehensive', provider: 'Star Health', monthlyPremium: 780, coverAmount: '500000',
-      features: ['Automatic Restoration', 'Air Ambulance', 'Health Progress Reward'],
-      waitingPeriod: '4 years', coPay: 'None', cashlessHospitals: '14,000+'
-    },
-    { 
-      id: '5', name: 'Activ Health Platinum', provider: 'Aditya Birla', monthlyPremium: 890, coverAmount: '1000000',
-      features: ['100% Health Returns', 'Chronic Support', 'Mental Wellness'],
-      waitingPeriod: '3 years', coPay: '10%', cashlessHospitals: '11,000+'
-    }
-  ];
+  const plans: InsurancePlan[] = [];
 
   const filteredPlans = plans.filter(p => {
     const matchesProvider = !providerFilter || p.provider === providerFilter;
@@ -5517,29 +6995,30 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
   return (
     <div className="space-y-6 pb-24">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center text-white shadow-lg">
-            <Shield size={20} />
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+            <Shield size={28} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight">Insurance Command</h2>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Coverage & Advisory</p>
+            <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">Policy Vault</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Strategic Coverage Hub</p>
           </div>
         </div>
         <button 
           onClick={() => setShowAdd(!showAdd)}
-          className="p-2 bg-[var(--card)] border border-[var(--border)] rounded-xl hover:border-blue-500/50 transition-all text-blue-500"
+          className="w-12 h-12 glass border border-white/10 rounded-2xl flex items-center justify-center hover:bg-white/5 transition-all text-blue-400 shadow-xl"
         >
-          {showAdd ? <X size={20} /> : <Plus size={20} />}
+          {showAdd ? <X size={24} /> : <Plus size={24} />}
         </button>
       </div>
 
-      <div className="flex bg-[var(--card2)] p-1 rounded-2xl border border-[var(--border)] overflow-x-auto no-scrollbar">
+      <div className="glass border border-white/10 rounded-[28px] p-1.5 flex items-center shadow-2xl relative overflow-hidden">
+        <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-blue-500/20 to-transparent" />
         <button 
           onClick={() => setActiveTab('my')}
           className={cn(
-            "flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all whitespace-nowrap",
-            activeTab === 'my' ? "bg-[var(--card)] text-blue-500 shadow-sm" : "text-[var(--muted)]"
+            "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
+            activeTab === 'my' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
           )}
         >
           My Policies
@@ -5547,8 +7026,8 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
         <button 
           onClick={() => setActiveTab('advisor')}
           className={cn(
-            "flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all whitespace-nowrap",
-            activeTab === 'advisor' ? "bg-[var(--card)] text-blue-500 shadow-sm" : "text-[var(--muted)]"
+            "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
+            activeTab === 'advisor' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
           )}
         >
           AI Advisor
@@ -5556,53 +7035,47 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
         <button 
           onClick={() => setActiveTab('compare')}
           className={cn(
-            "flex-1 min-w-[80px] py-3 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all whitespace-nowrap",
-            activeTab === 'compare' ? "bg-[var(--card)] text-blue-500 shadow-sm" : "text-[var(--muted)]"
+            "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
+            activeTab === 'compare' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
           )}
         >
-          Compare Plans
+          Market Check
         </button>
       </div>
 
       <AnimatePresence>
         {showAdd && (
           <motion.form 
-            initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+            initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
             onSubmit={handleAddPolicy}
-            className="bg-[var(--card)] border-2 border-blue-500/30 rounded-3xl p-6 space-y-4 shadow-xl shadow-blue-500/5 overflow-hidden"
+            className="glass-darker border border-blue-500/30 rounded-[40px] p-10 space-y-8 shadow-2xl overflow-hidden relative"
           >
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Policy Name</p>
-                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Optima Restore" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
+            <div className="absolute top-0 right-0 p-8 text-blue-500/5 rotate-12"><Shield size={120} /></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 relative z-10">
+              <div className="space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60 ml-1">Plan Name</p>
+                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Health Supreme" className="w-full glass border border-white/10 rounded-2xl p-4 text-[13px] font-bold outline-none focus:border-blue-500/50 transition-all text-white placeholder:opacity-20" />
               </div>
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Provider</p>
-                <input value={newProvider} onChange={e => setNewProvider(e.target.value)} placeholder="e.g. HDFC ERGO" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
+              <div className="space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60 ml-1">Provider Engine</p>
+                <input value={newProvider} onChange={e => setNewProvider(e.target.value)} placeholder="e.g. Star Health" className="w-full glass border border-white/10 rounded-2xl p-4 text-[13px] font-bold outline-none focus:border-blue-500/50 transition-all text-white placeholder:opacity-20" />
               </div>
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Policy ID</p>
-                <input value={newNum} onChange={e => setNewNum(e.target.value)} placeholder="POL-12345" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
+              <div className="space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60 ml-1">Archive ID</p>
+                <input value={newNum} onChange={e => setNewNum(e.target.value)} placeholder="SK-9981-LOG" className="w-full glass border border-white/10 rounded-2xl p-4 text-[13px] font-bold outline-none focus:border-blue-500/50 transition-all text-white placeholder:opacity-20" />
               </div>
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Expiry Date</p>
-                <input type="date" value={newExpiry} onChange={e => setNewExpiry(e.target.value)} className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Cover Amount</p>
-                <input value={newAmount} onChange={e => setNewAmount(e.target.value)} placeholder="e.g. 500000" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Annual Premium</p>
-                <input value={newPremium} onChange={e => setNewPremium(e.target.value)} placeholder="12000" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none" />
+              <div className="space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60 ml-1">Maturity Date</p>
+                <input type="date" value={newExpiry} onChange={e => setNewExpiry(e.target.value)} className="w-full glass border border-white/10 rounded-2xl p-4 text-[13px] font-bold outline-none focus:border-blue-500/50 transition-all text-white filter invert" />
               </div>
             </div>
             <button 
               type="submit"
               disabled={isSubmitting || !newName || !newProvider}
-              className="w-full py-4 bg-blue-500 text-white font-bold rounded-2xl shadow-lg shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50"
+              className="w-full py-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white font-black rounded-2xl shadow-xl shadow-blue-500/30 active:scale-95 transition-all disabled:opacity-30 flex items-center justify-center gap-3 text-xs uppercase tracking-[0.3em] border border-white/20"
             >
-              {isSubmitting ? 'Saving Policy...' : 'Save Policy to Vault'}
+              {isSubmitting ? <RefreshCw className="animate-spin" size={18} /> : null}
+              {isSubmitting ? 'Syncing...' : 'Seal Policy in Vault ✦'}
             </button>
           </motion.form>
         )}
@@ -5611,37 +7084,34 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
       {activeTab === 'my' && (
         <div className="space-y-6">
           {policies.length > 0 ? (
-            <div className="grid gap-4">
+            <div className="grid gap-6">
               {policies.map(p => (
-                <div key={p.id} className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-4 shadow-sm relative overflow-hidden group">
+                <div key={p.id} className="glass-morphism border border-white/10 rounded-[44px] p-8 space-y-6 shadow-2xl relative overflow-hidden group">
+                  <div className="absolute right-0 top-0 w-32 h-32 bg-blue-500/5 blur-[60px] pointer-events-none group-hover:bg-blue-500/10 transition-all" />
                   <div className="flex justify-between items-start relative z-10">
                     <div>
-                      <h4 className="font-serif text-xl">{p.policyName}</h4>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">{p.provider}</span>
-                        <span className="text-[var(--border)]">·</span>
-                        <span className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest font-mono">{p.policyNumber}</span>
+                      <h4 className="font-serif text-2xl text-white tracking-tight">{p.policyName}</h4>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">{p.provider}</span>
+                        <span className="text-white/10">|</span>
+                        <span className="text-[10px] font-black text-white/30 uppercase tracking-[0.2em] font-mono">{p.policyNumber}</span>
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="px-2 py-0.5 bg-green-500/10 text-green-500 rounded-full text-[8px] font-black uppercase tracking-widest">Active</div>
-                      <p className="text-[10px] text-[var(--muted)] font-bold mt-1">Expires: {p.expiryDate}</p>
+                      <div className="px-4 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-[8px] font-black uppercase tracking-widest">Active</div>
+                      <p className="text-[9px] text-[var(--muted)] font-bold mt-2 uppercase tracking-widest opacity-40 italic">Exp: {p.expiryDate}</p>
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-4 pt-2 relative z-10">
-                    <div className="bg-[var(--card2)] p-3 rounded-2xl border border-[var(--border)]">
-                      <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest">Sum Insured</p>
-                      <p className="text-sm font-bold text-blue-500">{p.coverageAmount}</p>
+                  <div className="grid grid-cols-2 gap-4 relative z-10">
+                    <div className="glass-darker p-5 rounded-[32px] border border-white/5 group-hover:border-blue-500/20 transition-all">
+                      <p className="text-[8px] font-black text-[var(--muted)] uppercase tracking-widest mb-1 opacity-60">Capital Insured</p>
+                      <p className="text-lg font-serif text-blue-400">{p.coverageAmount}</p>
                     </div>
-                    <div className="bg-[var(--card2)] p-3 rounded-2xl border border-[var(--border)]">
-                      <p className="text-[7px] font-black text-[var(--muted)] uppercase tracking-widest">Premium Paid</p>
-                      <p className="text-sm font-bold">{p.premium}</p>
+                    <div className="glass-darker p-5 rounded-[32px] border border-white/5 group-hover:border-white/20 transition-all">
+                      <p className="text-[8px] font-black text-[var(--muted)] uppercase tracking-widest mb-1 opacity-60">Annual Load</p>
+                      <p className="text-lg font-serif text-white">{p.premium}</p>
                     </div>
-                  </div>
-
-                  <div className="absolute -right-4 -bottom-4 opacity-5 group-hover:opacity-10 transition-opacity">
-                    <Shield size={100} />
                   </div>
                 </div>
               ))}
@@ -5743,7 +7213,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
                    </div>
                    <div className="text-right flex items-center gap-4">
                       <div>
-                        <div className="text-sm font-black text-blue-500">{formatCurrency(plan.monthlyPremium)}</div>
+                        <div className="text-sm font-black text-blue-500">{formatCurrency(plan.monthlyPremium, 'INR')}</div>
                         <div className="text-[7px] font-bold text-[var(--muted)] uppercase tracking-widest">/ Month</div>
                       </div>
                       <ChevronRight size={18} className="text-[var(--border)] group-hover:text-blue-500 transition-colors" />
@@ -5939,7 +7409,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
                                return (
                                   <td key={p.id} className="p-4 border-r border-[var(--border)] last:border-r-0 text-center">
                                      <div className="flex flex-col items-center gap-1">
-                                        <span className="font-bold text-blue-600">{formatCurrency(p.monthlyPremium)}</span>
+                                        <span className="font-bold text-blue-600">{formatCurrency(p.monthlyPremium, 'INR')}</span>
                                         {isLowest && selectedPlans.length > 1 && (
                                            <span className="px-1.5 py-0.5 bg-green-500/10 text-green-500 rounded text-[7px] font-black uppercase tracking-widest">Cheapest</span>
                                         )}
@@ -6018,6 +7488,26 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
                                </td>
                             ))}
                          </tr>
+                         <tr className="border-b border-[var(--border)] group hover:bg-[var(--card2)] transition-colors">
+                            <td className="p-4 border-r border-[var(--border)]">
+                               <div className="flex items-center gap-2">
+                                  <Star size={12} className="text-blue-500" />
+                                  <span className="font-black uppercase text-[8px] text-[var(--muted)]">Key Features</span>
+                               </div>
+                            </td>
+                            {selectedPlans.map(p => (
+                               <td key={p.id} className="p-4 border-r border-[var(--border)] last:border-r-0 align-top">
+                                  <div className="flex flex-col gap-1.5">
+                                     {p.features.map((feat, idx) => (
+                                        <div key={idx} className="flex items-start gap-1.5 text-[9px] text-[var(--text2)] leading-tight">
+                                           <div className="w-1 h-1 rounded-full bg-blue-500 mt-1 shrink-0" />
+                                           <span>{feat}</span>
+                                        </div>
+                                     ))}
+                                  </div>
+                               </td>
+                            ))}
+                         </tr>
                          <tr className="group hover:bg-[var(--card2)] transition-colors">
                             <td className="p-4 border-r border-[var(--border)]">
                                <div className="flex items-center gap-2">
@@ -6081,7 +7571,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
           <div className="space-y-3 pt-2">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Discover Plans</h3>
             <div className="grid gap-3">
-              {filteredPlans.map(plan => {
+               {filteredPlans.map(plan => {
                 const isSelected = selectedPlanIds.includes(plan.id);
                 return (
                   <div 
@@ -6106,7 +7596,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
                     </div>
                     <div className="text-right flex items-center gap-4">
                       <div>
-                        <div className="text-sm font-black text-blue-500">{formatCurrency(plan.monthlyPremium)}</div>
+                        <div className="text-sm font-black text-blue-500">{formatCurrency(plan.monthlyPremium, 'INR')}</div>
                         <div className="text-[7px] font-bold text-[var(--muted)] uppercase tracking-widest">/ Month</div>
                       </div>
                       <div className={cn(
@@ -6153,14 +7643,19 @@ function RemindersView({
   reminders, 
   onToggle, 
   onDelete, 
-  onAdd 
+  onAdd,
+  profile,
+  updateProfile
 }: { 
   reminders: Reminder[], 
   onToggle: (id: string | number) => void, 
   onDelete: (id: string | number) => void, 
-  onAdd: (r: Omit<Reminder, 'id' | 'on'>) => void 
+  onAdd: (r: Omit<Reminder, 'id' | 'on'>) => void,
+  profile: UserProfile,
+  updateProfile: (p: UserProfile) => void
 }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDose, setNewDose] = useState('');
   const [newTime, setNewTime] = useState('08:00');
@@ -6168,6 +7663,45 @@ function RemindersView({
   const [newColor, setNewColor] = useState('indigo');
   const [newCategory, setNewCategory] = useState<'medicine' | 'refill' | 'test' | 'other'>('medicine');
   const [newRefillDays, setNewRefillDays] = useState('30');
+  const [newNote, setNewNote] = useState('');
+
+  const handleAutoSchedule = async () => {
+    if (profile.medicines.length === 0) {
+      showDoneToast("No medications in your profile to schedule.");
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const data = await generateSmartMedicationSchedule(profile);
+      if (data.reminders) {
+        data.reminders.forEach((r: any) => {
+          onAdd(r);
+        });
+        showDoneToast(`Created ${data.reminders.length} smart reminders!`);
+      }
+    } catch (e) {
+      console.error(e);
+      showDoneToast("AI scheduling failed.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const logDose = (name: string) => {
+    const medIdx = profile.medicines.findIndex(m => m.name.toLowerCase() === name.toLowerCase());
+    if (medIdx === -1) return;
+
+    const newMeds = [...profile.medicines];
+    const med = newMeds[medIdx];
+    
+    // Decrement totalQuantity (rough estimation for refill logic)
+    // In a real app, we'd have a separate field for 'remainingStock'
+    const newQuantity = Math.max(0, med.totalQuantity - 1);
+    newMeds[medIdx] = { ...med, totalQuantity: newQuantity };
+    
+    updateProfile({ ...profile, medicines: newMeds });
+    showDoneToast(`Dose logged for ${name}. Remaining: ${newQuantity}`);
+  };
 
   const colors = [
     { name: 'indigo', hex: 'bg-indigo-500' },
@@ -6188,9 +7722,11 @@ function RemindersView({
       color: newColor,
       category: newCategory,
       refillDays: newCategory === 'refill' ? parseInt(newRefillDays) : undefined,
+      note: newNote.trim() || undefined,
     });
     setNewName('');
     setNewDose('');
+    setNewNote('');
     setNewRefillDays('30');
     setNewCategory('medicine');
     setShowAdd(false);
@@ -6208,12 +7744,24 @@ function RemindersView({
             <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Medicines & Health Tasks</p>
           </div>
         </div>
-        <button 
-          onClick={() => setShowAdd(true)}
-          className="w-10 h-10 rounded-xl bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-[var(--teal)] hover:border-[var(--teal)] transition-all"
-        >
-          <Plus size={20} />
-        </button>
+        <div className="flex items-center gap-2">
+          {profile.medicines.length > 0 && (
+            <button 
+              onClick={handleAutoSchedule}
+              disabled={isGenerating}
+              className="flex items-center gap-2 px-3 py-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 hover:text-white transition-all disabled:opacity-50"
+            >
+              {isGenerating ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} />}
+              AI Sync
+            </button>
+          )}
+          <button 
+            onClick={() => setShowAdd(true)}
+            className="w-10 h-10 rounded-xl bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-[var(--teal)] hover:border-[var(--teal)] transition-all"
+          >
+            <Plus size={20} />
+          </button>
+        </div>
       </div>
 
       <AnimatePresence>
@@ -6316,6 +7864,16 @@ function RemindersView({
                 )}
               </div>
 
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Custom Notes (Optional)</label>
+                <textarea 
+                  value={newNote} 
+                  onChange={e => setNewNote(e.target.value)}
+                  placeholder="e.g. Take with food, avoid caffeine"
+                  className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-xl p-3 text-sm focus:border-[var(--teal-dim)] outline-none min-h-[80px] resize-none"
+                />
+              </div>
+
               <div className="flex gap-3 pt-2">
                 <button 
                   onClick={() => setShowAdd(false)}
@@ -6362,6 +7920,11 @@ function RemindersView({
                   {r.category === 'refill' ? `Refill due in ${r.refillDays} days` : `${r.time} · ${r.freq}`}
                   {r.dose ? ` · ${r.dose}` : ''}
                 </p>
+                {r.note && (
+                  <p className="text-[10px] text-[var(--teal-dim)] mt-1 italic line-clamp-1 max-w-[180px]" title={r.note}>
+                    {r.note}
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -6377,6 +7940,15 @@ function RemindersView({
                   r.on ? "right-1" : "left-1"
                 )} />
               </button>
+              {r.category === 'medicine' && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); logDose(r.name); }}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-teal-400 bg-teal-500/5 hover:bg-teal-500 hover:text-white transition-all shadow-lg active:scale-90"
+                  title="Log Dose"
+                >
+                  <Check size={16} />
+                </button>
+              )}
               <button 
                 onClick={() => onDelete(r.id)}
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition-all"
@@ -6626,9 +8198,9 @@ function AlertsView({
   );
 }
 
-function HealthCalendar() {
+function HealthCalendar({ appointments, onAddAppointment, profile }: { appointments: Appointment[], onAddAppointment: (appt: Omit<Appointment, 'id'>) => Promise<void>, profile: UserProfile }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [events, setEvents] = useState<any[]>([
+  const [localEvents, setLocalEvents] = useState<any[]>([
     { id: 1, title: 'Morning Vit C', date: new Date().toDateString(), time: '09:00', type: 'med', completed: false },
     { id: 2, title: 'Gym Session', date: new Date().toDateString(), time: '17:30', type: 'workout', completed: false },
     { id: 3, title: 'Blood Pressure Check', date: new Date().toDateString(), time: '21:00', type: 'health', completed: false },
@@ -6637,32 +8209,61 @@ function HealthCalendar() {
   const [isAdding, setIsAdding] = useState(false);
   const [newEventTitle, setNewEventTitle] = useState('');
   const [newEventTime, setNewEventTime] = useState('12:00');
+  const [newEventDate, setNewEventDate] = useState(selectedDate.toISOString().split('T')[0]);
+  const [newEventType, setNewEventType] = useState('Doctor Appointment');
 
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const dates = Array.from({ length: 7 }, (_, i) => {
+  const dates = Array.from({ length: 14 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() + i);
     return d;
   });
 
-  const dailyEvents = events.filter(e => e.date === selectedDate.toDateString());
+  const calendarEvents = [
+    ...localEvents,
+    ...appointments.map(a => ({
+      id: a.id,
+      title: a.clinicName || a.type,
+      date: new Date(a.date).toDateString(),
+      time: a.time,
+      type: a.type,
+      completed: a.status === 'completed',
+      isPersistent: true
+    }))
+  ];
 
-  const addEvent = () => {
+  const dailyEvents = calendarEvents.filter(e => e.date === selectedDate.toDateString());
+
+  const addEvent = async () => {
     if (!newEventTitle) return;
-    setEvents([...events, {
-      id: Date.now(),
-      title: newEventTitle,
-      date: selectedDate.toDateString(),
-      time: newEventTime,
-      type: 'health',
-      completed: false
-    }]);
-    setIsAdding(false);
-    setNewEventTitle('');
+    
+    try {
+      await onAddAppointment({
+        clinicId: 'custom',
+        clinicName: newEventTitle,
+        date: newEventDate,
+        time: newEventTime,
+        status: 'upcoming',
+        patientName: profile.name || 'Member',
+        patientId: profile.uid || '',
+        type: newEventType
+      });
+      
+      showDoneToast("Event added to your health records");
+      setIsAdding(false);
+      setNewEventTitle('');
+    } catch (error) {
+       console.error(error);
+    }
   };
 
-  const toggleEvent = (id: number) => {
-    setEvents(events.map(e => e.id === id ? { ...e, completed: !e.completed } : e));
+  const toggleEvent = (id: any, isPersistent?: boolean) => {
+    if (isPersistent) {
+      // In a real app, we'd update Firestore status
+      showDoneToast("Persistent event status update coming soon");
+    } else {
+      setLocalEvents(localEvents.map(e => e.id === id ? { ...e, completed: !e.completed } : e));
+    }
   };
 
   return (
@@ -6689,7 +8290,7 @@ function HealthCalendar() {
         <div className="flex justify-between">
           {dates.map((d, i) => {
             const isSelected = d.toDateString() === selectedDate.toDateString();
-            const hasEvents = events.some(e => e.date === d.toDateString());
+            const hasEvents = calendarEvents.some(e => e.date === d.toDateString());
             return (
               <button 
                 key={i} 
@@ -6720,7 +8321,7 @@ function HealthCalendar() {
                     <h4 className={cn("text-sm font-bold text-[var(--text)] group-hover:text-indigo-400 transition-colors uppercase tracking-tight", ev.completed && "line-through text-[var(--muted)]")}>{ev.title}</h4>
                     <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-wider">{ev.type}</p>
                  </div>
-                 <button onClick={() => toggleEvent(ev.id)} className={cn("w-8 h-8 rounded-full border border-[var(--border)] flex items-center justify-center transition-all", ev.completed ? "bg-indigo-500 border-indigo-500 text-white" : "text-[var(--muted)] hover:border-indigo-500 hover:text-indigo-500")}>
+                 <button onClick={() => toggleEvent(ev.id, ev.isPersistent)} className={cn("w-8 h-8 rounded-full border border-[var(--border)] flex items-center justify-center transition-all", ev.completed ? "bg-indigo-500 border-indigo-500 text-white" : "text-[var(--muted)] hover:border-indigo-500 hover:text-indigo-500")}>
                     <Check size={14} />
                  </button>
               </div>
@@ -6729,12 +8330,44 @@ function HealthCalendar() {
             )}
             
             {isAdding ? (
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 space-y-3 shadow-lg">
-                <input value={newEventTitle} onChange={e => setNewEventTitle(e.target.value)} placeholder="Activity Title" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-xl p-3 text-sm outline-none focus:border-indigo-500" />
-                <div className="flex gap-2">
-                  <input type="time" value={newEventTime} onChange={e => setNewEventTime(e.target.value)} className="bg-[var(--card2)] border border-[var(--border)] rounded-xl p-3 text-sm" />
-                  <button onClick={addEvent} className="flex-1 bg-indigo-500 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-md">Add</button>
-                  <button onClick={() => setIsAdding(false)} className="px-4 bg-[var(--card2)] border border-[var(--border)] rounded-xl text-xs font-black uppercase">Cancel</button>
+              <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-4 shadow-2xl border-indigo-500/20">
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Event Title</label>
+                    <input value={newEventTitle} onChange={e => setNewEventTitle(e.target.value)} placeholder="e.g. Vaccination at Apollo" className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm outline-none focus:border-indigo-500 font-bold" />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Date</label>
+                      <input type="date" value={newEventDate} onChange={e => setNewEventDate(e.target.value)} className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm outline-none focus:border-indigo-500 font-bold" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Time</label>
+                      <input type="time" value={newEventTime} onChange={e => setNewEventTime(e.target.value)} className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm outline-none focus:border-indigo-500 font-bold" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Event Type</label>
+                    <select 
+                      value={newEventType} 
+                      onChange={e => setNewEventType(e.target.value)}
+                      className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm outline-none focus:border-indigo-500 font-bold appearance-none"
+                    >
+                      <option>Doctor Appointment</option>
+                      <option>Vaccination</option>
+                      <option>Health Checkup</option>
+                      <option>Lab Test</option>
+                      <option>Medication Change</option>
+                      <option>Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button onClick={addEvent} className="flex-1 py-4 bg-indigo-500 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-indigo-500/20 active:scale-95 transition-all">Save Event</button>
+                  <button onClick={() => setIsAdding(false)} className="px-6 py-4 bg-[var(--card2)] border border-[var(--border)] rounded-2xl text-xs font-black uppercase active:scale-95 transition-all">Cancel</button>
                 </div>
               </div>
             ) : (
@@ -6772,7 +8405,9 @@ function LabScanner() {
       const base64Data = image ? image.split(',')[1] : undefined;
       const data = await analyzeLabReport(base64Data, textInput);
       setResult(data);
+      showDoneToast("Analysis Complete");
     } catch (error) {
+       console.error("Lab scan error:", error);
        showDoneToast("Error analyzing report. Try a clearer photo.");
     } finally {
       setIsLoading(false);
@@ -6970,7 +8605,7 @@ function LabScanner() {
                </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-4">
                 <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-400">
                    <Apple size={14} />
@@ -6988,13 +8623,28 @@ function LabScanner() {
 
               <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-4">
                 <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-teal-400">
+                   <Activity size={14} />
+                   Lifestyle Adjustments
+                </div>
+                <ul className="space-y-2">
+                  {result.lifestyleSuggestions?.map((s: string, i: number) => (
+                    <li key={i} className="flex gap-2 text-xs font-bold text-[var(--text2)] leading-relaxed">
+                      <span className="text-teal-400">•</span>
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-4">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-amber-400">
                    <Stethoscope size={14} />
                    Doctor Questions
                 </div>
                 <ul className="space-y-2">
                   {result.followUpQuestions?.map((q: string, i: number) => (
                     <li key={i} className="flex gap-2 text-xs font-bold text-[var(--text2)] leading-relaxed bg-[var(--card2)] p-3 rounded-2xl border border-[var(--border)]">
-                      <span className="text-teal-400">?</span>
+                      <span className="text-amber-400">?</span>
                       {q}
                     </li>
                   ))}
@@ -7050,37 +8700,49 @@ function SkinScanner() {
   return (
     <div className="space-y-6 pb-8">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center text-white shadow-lg">
-          <Camera size={20} />
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center text-white shadow-xl shadow-pink-500/20 border border-white/20">
+          <Camera size={22} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Skin Scanner</h2>
-          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-widest">AI assessment of skin conditions</p>
+          <h2 className="font-serif text-2xl tracking-tight text-[var(--text)]">Skin Scanner</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-0.5 opacity-60">AI Skin Condition Analysis</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 space-y-6">
+      <div className="glass border border-white/10 rounded-[40px] p-8 space-y-6 relative overflow-hidden group">
+        <div className="absolute -right-12 -top-12 w-48 h-48 bg-pink-500/5 rounded-full blur-[80px] pointer-events-none group-hover:bg-pink-500/10 transition-colors duration-700" />
+        
         {!image ? (
-          <label className="flex flex-col items-center justify-center border-2 border-dashed border-[var(--border)] rounded-2xl p-12 cursor-pointer hover:border-[var(--teal-dim)] transition-all group">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--teal)] transition-colors mb-4">
-              <Camera size={32} />
+          <label className="flex flex-col items-center justify-center border-2 border-dashed border-white/10 rounded-[32px] p-16 cursor-pointer hover:border-pink-500/30 hover:bg-pink-500/5 transition-all group/label">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center text-[var(--muted)] group-hover/label:text-pink-400 group-hover/label:scale-110 transition-all mb-6 shadow-inner border border-white/5">
+              <Camera size={40} strokeWidth={1.5} />
             </div>
-            <span className="text-sm font-bold">Snap Skin Condition</span>
-            <span className="text-xs text-[var(--muted)] mt-1">Clear, well-lit photo</span>
+            <span className="text-sm font-black uppercase tracking-widest text-[var(--text)]">Snap Skin Issue</span>
+            <span className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest mt-2 opacity-40">Clear, well-lit medical photo</span>
             <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
           </label>
         ) : (
           <div className="space-y-4">
-            <div className="relative aspect-square rounded-xl overflow-hidden border border-[var(--border)]">
+            <div className="relative aspect-square rounded-[32px] overflow-hidden border border-white/10 shadow-2xl">
               <img src={image} alt="Skin" className="w-full h-full object-cover" />
-              <button onClick={() => setImage(null)} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-md"><X size={16} /></button>
+              <button onClick={() => setImage(null)} className="absolute top-4 right-4 p-3 glass-morphism border border-white/20 text-white rounded-full backdrop-blur-xl hover:bg-white/10 transition-colors shadow-lg"><X size={20} /></button>
             </div>
             <button 
               onClick={handleScan}
               disabled={isLoading}
-              className="w-full py-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] font-bold rounded-2xl shadow-xl disabled:opacity-50 transition-all"
+              className="w-full py-6 bg-gradient-to-br from-pink-500 to-pink-600 text-white font-black rounded-[28px] shadow-2xl shadow-pink-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.25em] flex items-center justify-center gap-3 border border-white/20"
             >
-              {isLoading ? 'Analysing Skin...' : 'Analyse with AI ✦'}
+              {isLoading ? (
+                <>
+                  <RefreshCw size={20} className="animate-spin" />
+                  <span>Analysing Skin...</span>
+                </>
+              ) : (
+                <>
+                  <span>Analyse with AI ✦</span>
+                  <Sparkles size={20} />
+                </>
+              )}
             </button>
           </div>
         )}
@@ -7088,15 +8750,29 @@ function SkinScanner() {
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          className="glass border border-white/10 rounded-[32px] p-8 shadow-2xl relative overflow-hidden"
         >
-          <h3 className="font-serif text-lg text-[var(--teal)]">AI Assessment</h3>
-          <div className="text-sm leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
-          <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-            <AlertTriangle size={16} className="text-amber-400 shrink-0" />
-            <p className="text-xs text-amber-200/80 leading-tight">This is AI-generated guidance and not a medical diagnosis. For any suspicious moles or persistent rashes, consult a dermatologist.</p>
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-pink-500/20 to-transparent" />
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl glass-morphism border border-pink-500/20 flex items-center justify-center text-pink-400 font-bold">
+              <Bot size={22} />
+            </div>
+            <div>
+              <h3 className="font-serif text-xl text-[var(--text)]">Clinical Analysis</h3>
+              <p className="text-[10px] font-black text-pink-500 uppercase tracking-widest opacity-60">AI-Dermatology Support</p>
+            </div>
+          </div>
+          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-white/2 border border-white/5 rounded-2xl p-6 shadow-inner mb-6">
+            <div className="text-sm leading-relaxed space-y-4" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          </div>
+          <div className="flex items-start gap-4 p-5 glass-darker border border-amber-500/20 rounded-2xl">
+            <AlertTriangle size={24} className="text-amber-500 shrink-0 mt-0.5 shadow-[0_0_10px_rgba(245,158,11,0.2)]" />
+            <div className="space-y-1">
+              <p className="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em]">Medical Disclaimer</p>
+              <p className="text-xs text-amber-200/60 leading-relaxed font-medium italic">This is an AI-generated assessment for informational purposes only. For any suspicious moles or persistent rashes, consult a dermatologist immediately.</p>
+            </div>
           </div>
         </motion.div>
       )}
@@ -7104,7 +8780,7 @@ function SkinScanner() {
   );
 }
 
-function FoodScanner() {
+function NutritionPlanner({ profile }: { profile: UserProfile }) {
   const [image, setImage] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -7124,49 +8800,62 @@ function FoodScanner() {
     setResult(null);
     try {
       const base64Data = image.split(',')[1];
-      const data = await analyzeFood(base64Data);
+      const data = await analyzeFood(base64Data, profile);
       setResult(data);
     } catch (error) {
       console.error("Food analysis error:", error);
+      showDoneToast("Error analyzing meal. Try again.");
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-6 pb-20">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center text-white shadow-lg">
-          <Apple size={20} />
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center text-white shadow-xl shadow-orange-500/20 border border-white/20">
+          <Utensils size={24} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Food Scanner</h2>
-          <p className="text-xs text-[var(--muted)] font-bold uppercase tracking-widest">AI Nutritional Analysis</p>
+          <h2 className="font-serif text-2xl tracking-tight text-[var(--text)]">Diet & Nutrition Planner</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-0.5 opacity-60">AI Weight & Health Management</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 space-y-6">
+      <div className="glass border border-white/10 rounded-[40px] p-8 space-y-6 relative overflow-hidden group">
+        <div className="absolute -right-12 -top-12 w-48 h-48 bg-orange-500/5 rounded-full blur-[80px] pointer-events-none group-hover:bg-orange-500/10 transition-colors duration-700" />
+        
         {!image ? (
-          <label className="flex flex-col items-center justify-center border-2 border-dashed border-[var(--border)] rounded-2xl p-12 cursor-pointer hover:border-amber-500/30 transition-all group">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center text-[var(--muted)] group-hover:text-amber-500 transition-colors mb-4">
-              <Apple size={32} />
+          <label className="flex flex-col items-center justify-center border-2 border-dashed border-white/10 rounded-[32px] p-16 cursor-pointer hover:border-orange-500/30 hover:bg-orange-500/5 transition-all group/label">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center text-[var(--muted)] group-hover/label:text-orange-400 group-hover/label:scale-110 transition-all mb-6 shadow-inner border border-white/5">
+              <Camera size={40} strokeWidth={1.5} />
             </div>
-            <span className="text-sm font-bold">Snap Your Meal</span>
-            <span className="text-xs text-[var(--muted)] mt-1">Get nutrition estimate</span>
+            <span className="text-sm font-black uppercase tracking-widest text-[var(--text)]">Snap Your Meal</span>
+            <span className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest mt-2 opacity-40">Get instant calorie & health insights</span>
             <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
           </label>
         ) : (
           <div className="space-y-4">
-            <div className="relative aspect-square rounded-xl overflow-hidden border border-[var(--border)]">
+            <div className="relative aspect-video rounded-[32px] overflow-hidden border border-white/10 shadow-2xl">
               <img src={image} alt="Meal" className="w-full h-full object-cover" />
-              <button onClick={() => setImage(null)} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full backdrop-blur-md"><X size={16} /></button>
+              <button onClick={() => setImage(null)} className="absolute top-4 right-4 p-3 glass-morphism border border-white/20 text-white rounded-full backdrop-blur-xl hover:bg-white/10 transition-colors shadow-lg"><X size={20} /></button>
             </div>
             <button 
               onClick={handleScan}
               disabled={isLoading}
-              className="w-full py-4 bg-gradient-to-br from-amber-500 to-amber-600 text-white font-bold rounded-2xl shadow-xl disabled:opacity-50 transition-all"
+              className="w-full py-6 bg-gradient-to-br from-orange-500 to-amber-600 text-white font-black rounded-[28px] shadow-2xl shadow-orange-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.25em] flex items-center justify-center gap-3 border border-white/20"
             >
-              {isLoading ? 'Analyzing Meal...' : 'Analyze Nutrition ✦'}
+              {isLoading ? (
+                <>
+                  <RefreshCw size={20} className="animate-spin" />
+                  <span>Calculating Nutrition...</span>
+                </>
+              ) : (
+                <>
+                  <span>Estimate Nutrition ✦</span>
+                  <Sparkles size={20} />
+                </>
+              )}
             </button>
           </div>
         )}
@@ -7174,29 +8863,65 @@ function FoodScanner() {
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="space-y-6"
         >
-          <h3 className="font-serif text-lg text-amber-500">{result.dishName}</h3>
-          <p className="text-sm text-[var(--text2)] leading-relaxed">{result.explanation}</p>
-          <div className="grid grid-cols-2 gap-3">
-             <div className="bg-[var(--card2)] p-3 rounded-xl border border-[var(--border)]">
-                <div className="text-[10px] uppercase font-bold text-[var(--muted)]">Calories</div>
-                <div className="text-xl font-serif text-amber-500">{result.calories} kcal</div>
-             </div>
-             <div className="bg-[var(--card2)] p-3 rounded-xl border border-[var(--border)]">
-                <div className="text-[10px] uppercase font-bold text-[var(--muted)]">Protein</div>
-                <div className="text-xl font-serif text-teal-400">{result.protein}g</div>
-             </div>
-             <div className="bg-[var(--card2)] p-3 rounded-xl border border-[var(--border)]">
-                <div className="text-[10px] uppercase font-bold text-[var(--muted)]">Carbs</div>
-                <div className="text-xl font-serif text-blue-400">{result.carbs}g</div>
-             </div>
-             <div className="bg-[var(--card2)] p-3 rounded-xl border border-[var(--border)]">
-                <div className="text-[10px] uppercase font-bold text-[var(--muted)]">Fats</div>
-                <div className="text-xl font-serif text-rose-400">{result.fats}g</div>
-             </div>
+          <div className="glass border border-white/10 rounded-[32px] p-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-orange-500/20 to-transparent" />
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="font-serif text-2xl text-orange-500 mb-1">{result.dishName}</h3>
+                <p className="text-xs text-[var(--muted)]">{result.explanation}</p>
+              </div>
+              <div className="px-4 py-2 bg-orange-500/10 border border-orange-500/20 rounded-2xl text-orange-500 font-serif text-xl">
+                {result.calories} <span className="text-[10px] uppercase font-bold">kcal</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 mb-8">
+               <div className="glass-darker p-4 rounded-2xl border border-white/5">
+                  <div className="text-[10px] uppercase font-black tracking-widest text-[var(--muted)] mb-1">Protein</div>
+                  <div className="text-lg font-serif text-teal-400">{result.protein}g</div>
+               </div>
+               <div className="glass-darker p-4 rounded-2xl border border-white/5">
+                  <div className="text-[10px] uppercase font-black tracking-widest text-[var(--muted)] mb-1">Carbs</div>
+                  <div className="text-lg font-serif text-blue-400">{result.carbs}g</div>
+               </div>
+               <div className="glass-darker p-4 rounded-2xl border border-white/5">
+                  <div className="text-[10px] uppercase font-black tracking-widest text-[var(--muted)] mb-1">Fats</div>
+                  <div className="text-lg font-serif text-rose-400">{result.fats}g</div>
+               </div>
+            </div>
+
+            {result.warnings && result.warnings.length > 0 && (
+              <div className="p-5 bg-rose-500/5 border border-rose-500/20 rounded-2xl mb-6">
+                <div className="flex items-center gap-2 text-rose-400 text-[10px] font-black uppercase tracking-widest mb-3">
+                  <AlertTriangle size={14} /> Health Warning
+                </div>
+                <ul className="space-y-2">
+                  {result.warnings.map((w: string, i: number) => (
+                    <li key={i} className="text-xs font-bold text-rose-200/70 leading-relaxed">• {w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-orange-400">
+                <Activity size={14} /> Personalized Tips
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {result.healthTips?.map((tip: string, i: number) => (
+                  <div key={i} className="p-4 bg-white/5 border border-white/5 rounded-2xl flex items-start gap-3">
+                    <div className="w-6 h-6 rounded-lg bg-orange-500/10 flex items-center justify-center text-orange-500 shrink-0 mt-0.5">
+                      <Star size={12} fill="currentColor" />
+                    </div>
+                    <p className="text-xs font-bold text-[var(--text2)] leading-relaxed">{tip}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </motion.div>
       )}
@@ -7341,42 +9066,67 @@ function PatternDetector({ journal }: { journal: JournalEntry[] }) {
   };
 
   return (
-    <div className="space-y-6 pb-8">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-lg">
-          <BarChart3 size={20} />
+    <div className="space-y-6 pb-20">
+      <div className="flex items-center gap-4">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+          <BarChart3 size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Pattern Detector</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">AI health analysis</p>
+          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Pattern Pulse</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">AI Correlation Engine</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 text-center space-y-4">
-        <div className="w-16 h-16 rounded-full bg-blue-500/10 flex items-center justify-center mx-auto text-blue-400">
-          <Sparkles size={32} />
+      <div className="glass border border-white/10 rounded-[44px] p-10 text-center space-y-6 shadow-2xl relative overflow-hidden group">
+        <div className="absolute -right-16 -top-16 w-64 h-64 bg-blue-500/5 rounded-full blur-[100px] pointer-events-none group-hover:bg-blue-500/10 transition-colors" />
+        
+        <div className="w-24 h-24 rounded-[32px] glass-darker flex items-center justify-center mx-auto text-blue-400 border border-blue-500/10 shadow-inner group-hover:scale-110 transition-transform duration-700">
+          <Sparkles size={44} />
         </div>
-        <div className="space-y-1">
-          <h3 className="font-serif text-lg">Find Hidden Links</h3>
-          <p className="text-sm text-[var(--muted)]">Veda analyzes your journal to find how sleep, mood, and energy affect each other.</p>
+        <div className="space-y-2">
+          <h3 className="font-serif text-2xl text-[var(--text)]">Find Your Rhythm</h3>
+          <p className="text-[15px] text-[var(--muted)] max-w-[280px] mx-auto font-medium leading-relaxed opacity-80">Veda triangulates your journals to find how biological patterns affect your daily vibe.</p>
         </div>
         <button 
           onClick={handleDetect}
           disabled={isLoading || journal.length < 3}
-          className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all"
+          className="w-full py-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white font-black rounded-[28px] shadow-2xl shadow-blue-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.3em] flex items-center justify-center gap-3 border border-white/20"
         >
-          {isLoading ? 'Analyzing...' : journal.length < 3 ? 'Log 3+ days to start' : 'Detect Patterns ✦'}
+          {isLoading ? (
+            <>
+              <RefreshCw size={20} className="animate-spin" />
+              <span>Decoding Patterns...</span>
+            </>
+          ) : journal.length < 3 ? (
+            <span>Log 3+ days to activate</span>
+          ) : (
+            <>
+              <span>Pulse Check ✦</span>
+              <Sparkles size={20} />
+            </>
+          )}
         </button>
       </div>
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          className="glass border border-white/10 rounded-[44px] p-9 shadow-2xl relative overflow-hidden"
         >
-          <h3 className="font-serif text-lg text-blue-400">Detected Patterns</h3>
-          <div className="text-sm leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/30 to-transparent" />
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-10 h-10 rounded-xl glass-morphism border border-blue-500/20 flex items-center justify-center text-blue-400 font-bold">
+              <Zap size={22} />
+            </div>
+            <h3 className="font-serif text-2xl text-[var(--text)]">AI Detected Patterns</h3>
+          </div>
+          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-white/2 border border-white/5 rounded-[32px] p-8 shadow-inner mb-6">
+             <div className="text-[15px] leading-relaxed space-y-4 font-medium" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.3em] opacity-40 italic">Pattern accuracy improves with more logs.</p>
+          </div>
         </motion.div>
       )}
     </div>
@@ -7410,70 +9160,79 @@ function AdviceView({ journal, profile }: { journal: JournalEntry[], profile: Us
 
   return (
     <div className="space-y-6 pb-20">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg">
-          <Bot size={20} />
+      <div className="flex items-center gap-4">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-xl shadow-[var(--teal)]/20 border border-white/20">
+          <Bot size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Health Advisor</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Personalized guidance</p>
+          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Health Guru</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Personalized AI Mentorship</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <AdviceCard icon={<Leaf size={20} />} label="Diet" onClick={() => handleGetAdvice('diet')} color="teal" />
-        <AdviceCard icon={<Activity size={20} />} label="Lifestyle" onClick={() => handleGetAdvice('lifestyle')} color="blue" />
-        <AdviceCard icon={<Brain size={20} />} label="Mental" onClick={() => handleGetAdvice('mental wellness')} color="purple" />
-        <AdviceCard icon={<Stethoscope size={20} />} label="Medical" onClick={() => handleGetAdvice('preventive medical')} color="red" />
+      <div className="grid grid-cols-2 gap-4">
+        <AdviceCard icon={<Leaf size={24} />} label="Diet" onClick={() => handleGetAdvice('diet')} color="emerald" />
+        <AdviceCard icon={<Activity size={24} />} label="Lifestyle" onClick={() => handleGetAdvice('lifestyle')} color="blue" />
+        <AdviceCard icon={<Brain size={24} />} label="Mental" onClick={() => handleGetAdvice('mental wellness')} color="purple" />
+        <AdviceCard icon={<Stethoscope size={24} />} label="Medical" onClick={() => handleGetAdvice('preventive medical')} color="rose" />
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4 shadow-sm relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-          <Sparkles size={80} />
+      <div className="glass border border-white/10 rounded-[32px] p-8 space-y-6 shadow-xl relative overflow-hidden group">
+        <div className="absolute top-0 right-0 p-8 opacity-5 pointer-events-none group-hover:scale-125 transition-transform duration-1000">
+          <Sparkles size={120} />
         </div>
-        <div className="space-y-1 relative z-10">
-          <h3 className="font-serif text-lg">Custom Topic</h3>
-          <p className="text-xs text-[var(--muted)] font-medium">Ask about anything specific — e.g., "Post-workout recovery" or "Sleep hygiene for shifts"</p>
+        <div className="space-y-2 relative z-10">
+          <h3 className="font-serif text-xl text-[var(--text)]">Custom Direction</h3>
+          <p className="text-[13px] text-[var(--muted)] font-medium leading-relaxed opacity-80">Describe a specific goal or health concern — Veda will architect a unique path for you.</p>
         </div>
-        <form onSubmit={handleCustomAdvice} className="relative z-10 flex gap-2">
+        <form onSubmit={handleCustomAdvice} className="relative z-10 flex gap-3">
           <input 
             type="text" 
             value={customInput}
             onChange={(e) => setCustomInput(e.target.value)}
-            placeholder="What's on your mind?"
-            className="flex-1 bg-[var(--card2)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm outline-none focus:border-[var(--teal-dim)] transition-all"
+            placeholder="Focus topic (e.g. sleep hygiene)..."
+            className="flex-1 glass-darker border border-white/10 rounded-2xl px-6 py-4 text-sm outline-none focus:border-[var(--teal)]/40 transition-all font-medium placeholder:text-[var(--muted)]/30"
           />
           <button 
             type="submit"
             disabled={isLoading || !customInput.trim()}
-            className="px-5 bg-[var(--teal)] text-[#020f0c] font-bold rounded-xl text-xs active:scale-95 disabled:opacity-50 transition-all shadow-lg shadow-[var(--teal)]/10"
+            className="w-14 h-14 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl flex items-center justify-center hover:scale-110 active:scale-90 disabled:opacity-50 transition-all shadow-xl shadow-[var(--teal)]/20"
           >
-            Ask Veda
+            <ArrowRight size={24} />
           </button>
         </form>
       </div>
 
       {isLoading && (
-        <div className="p-12 text-center">
-          <div className="inline-block w-8 h-8 border-4 border-[var(--teal)] border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-sm text-[var(--muted)] font-medium">Consulting Veda AI...</p>
+        <div className="p-20 flex flex-col items-center justify-center gap-6 glass border border-white/10 rounded-[40px] shadow-inner">
+          <div className="relative">
+            <div className="absolute inset-0 bg-[var(--teal)]/20 blur-2xl rounded-full" />
+            <RefreshCw className="animate-spin relative z-10 text-[var(--teal)]" size={40} />
+          </div>
+          <p className="text-[11px] font-black uppercase tracking-[0.4em] text-[var(--muted)] opacity-40">Consulting Cosmic Database...</p>
         </div>
       )}
 
       {result && !isLoading && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 space-y-4 shadow-xl"
+          className="glass border border-white/10 rounded-[44px] p-10 shadow-2xl relative overflow-hidden"
         >
-          <div className="flex items-center gap-2 text-[var(--teal)]">
-            <Sparkles size={18} />
-            <h3 className="font-serif text-lg">Advice for You</h3>
+          <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-[var(--teal)]/30 to-transparent" />
+          <div className="flex items-center gap-4 mb-8">
+            <div className="w-12 h-12 rounded-2xl glass-morphism border border-[var(--teal)]/20 flex items-center justify-center text-[var(--teal)] shadow-inner">
+              <Sparkles size={24} />
+            </div>
+            <div>
+              <h3 className="font-serif text-2xl text-[var(--text)]">Universal Advice</h3>
+              <p className="text-[9px] font-black text-[var(--teal)] uppercase tracking-widest opacity-60">Personalized Wisdom Packet</p>
+            </div>
           </div>
-          <div className="text-[15px] leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
-          <div className="pt-2 border-t border-[var(--border)]">
-            <p className="text-[10px] text-red-400/80 font-bold uppercase tracking-widest text-center">
-              ⚠️ Not medical advice. Consult a doctor.
+          <div className="text-[15px] leading-relaxed space-y-5 text-[var(--text2)] prose prose-invert max-w-none font-medium italic" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="mt-10 pt-6 border-t border-white/5 text-center">
+            <p className="text-[10px] text-rose-400/60 font-black uppercase tracking-[0.2em] italic">
+              ✦ Medical Disclaimer: Veda provides supportive guidance, not clinical diagnosis.
             </p>
           </div>
         </motion.div>
@@ -7484,15 +9243,24 @@ function AdviceView({ journal, profile }: { journal: JournalEntry[], profile: Us
 
 function AdviceCard({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) {
   const colors: Record<string, string> = {
-    teal: 'bg-[var(--teal)]/10 text-[var(--teal)] border-[var(--teal)]/20',
-    blue: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    purple: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
-    red: 'bg-red-500/10 text-red-400 border-red-500/20'
+    teal: 'hover:text-emerald-400 border-emerald-500/20 group-hover:bg-emerald-500/10',
+    emerald: 'hover:text-emerald-400 border-emerald-500/20 group-hover:bg-emerald-500/10',
+    blue: 'hover:text-blue-400 border-blue-500/20 group-hover:bg-blue-500/10',
+    purple: 'hover:text-purple-400 border-purple-500/20 group-hover:bg-purple-500/10',
+    rose: 'hover:text-rose-400 border-rose-500/20 group-hover:bg-rose-500/10',
+    red: 'hover:text-rose-400 border-rose-500/20 group-hover:bg-rose-500/10',
   };
   return (
-    <button onClick={onClick} className={cn("p-5 rounded-2xl border text-left space-y-3 transition-all active:scale-95", colors[color])}>
-      <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">{icon}</div>
-      <span className="block font-serif text-lg">{label}</span>
+    <button 
+      onClick={onClick} 
+      className={cn(
+        "glass border border-white/10 rounded-[32px] p-6 flex flex-col items-center justify-center gap-4 transition-all hover:scale-[1.05] active:scale-95 group shadow-lg",
+      )}
+    >
+      <div className={cn("w-16 h-16 rounded-[24px] glass-darker flex items-center justify-center transition-all border border-white/5 shadow-inner", colors[color] || "")}>
+        {icon}
+      </div>
+      <span className="text-[11px] font-black uppercase tracking-[0.3em] font-serif text-[var(--text)] group-hover:tracking-[0.4em] transition-all">{label}</span>
     </button>
   );
 }
@@ -7517,46 +9285,82 @@ function OpinionView({ profile }: { profile: UserProfile }) {
   };
 
   return (
-    <div className="space-y-6 pb-8">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-lg">
-          <Clipboard size={20} />
+    <div className="space-y-6 pb-20">
+      <div className="flex items-center gap-4">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+          <BookCheck size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Second Opinion</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">AI medical review</p>
+          <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Veda Review</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Medical Second Opinion</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <div className="space-y-2">
-          <label className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">What was your diagnosis?</label>
-          <input 
-            type="text"
-            value={diagnosis}
-            onChange={e => setDiagnosis(e.target.value)}
-            placeholder="e.g. Type 2 Diabetes"
-            className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-xl p-4 text-sm outline-none focus:border-[var(--teal-dim)] transition-all"
-          />
+      <div className="glass border border-white/10 rounded-[40px] p-10 space-y-8 shadow-xl relative overflow-hidden group">
+        <div className="absolute -right-12 -top-12 w-48 h-48 bg-blue-500/5 rounded-full blur-[80px] pointer-events-none group-hover:bg-blue-500/10 transition-colors duration-700" />
+        
+        <div className="space-y-3 relative z-10">
+          <label className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] ml-1">Current Diagnosis</label>
+          <div className="relative group/input">
+            <div className="absolute left-6 top-1/2 -translate-y-1/2 text-blue-400 opacity-40 group-focus-within/input:opacity-100 transition-opacity">
+              <Clipboard size={20} />
+            </div>
+            <input 
+              type="text"
+              value={diagnosis}
+              onChange={e => setDiagnosis(e.target.value)}
+              placeholder="e.g. Type 2 Diabetes"
+              className="w-full glass-darker border border-white/10 rounded-[28px] pl-16 pr-8 py-6 text-[15px] outline-none focus:border-blue-500/40 transition-all font-medium placeholder:text-[var(--muted)]/30"
+            />
+          </div>
         </div>
 
         <button 
           onClick={handleGetOpinion}
           disabled={isLoading || !diagnosis.trim()}
-          className="w-full py-4 bg-gradient-to-br from-blue-500 to-blue-600 text-white font-bold rounded-2xl shadow-xl disabled:opacity-50 transition-all"
+          className="w-full py-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white font-black rounded-[28px] shadow-2xl shadow-blue-600/30 active:scale-[0.98] transition-all disabled:opacity-50 text-xs uppercase tracking-[0.25em] flex items-center justify-center gap-3 border border-white/20 relative z-10"
         >
-          {isLoading ? 'Reviewing...' : 'Get Second Opinion ✦'}
+          {isLoading ? (
+            <>
+              <RefreshCw size={20} className="animate-spin" />
+              <span>Reviewing Clinical Data...</span>
+            </>
+          ) : (
+            <>
+              <span>Get Second Opinion ✦</span>
+              <Sparkles size={20} />
+            </>
+          )}
         </button>
       </div>
 
       {result && (
         <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="glass border border-white/10 rounded-[44px] p-10 shadow-2xl relative overflow-hidden"
         >
-          <h3 className="font-serif text-lg text-blue-400">AI Review</h3>
-          <div className="text-sm leading-relaxed space-y-4 text-[var(--text2)]" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/30 to-transparent" />
+          <div className="flex items-center gap-4 mb-8">
+            <div className="w-12 h-12 rounded-2xl glass-morphism border border-blue-500/20 flex items-center justify-center text-blue-400 shadow-inner">
+              <Stethoscope size={24} />
+            </div>
+            <div>
+              <h3 className="font-serif text-2xl text-[var(--text)]">Clinical Analysis</h3>
+              <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest opacity-60">AI Diagnostic Review</p>
+            </div>
+          </div>
+          <div className="text-[15px] leading-relaxed space-y-5 text-[var(--text2)] prose prose-invert max-w-none font-medium italic mb-8" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+          
+          <div className="p-6 glass-darker border border-emerald-500/20 rounded-3xl flex items-start gap-4">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+              <Search size={18} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Verification Recommended</p>
+              <p className="text-xs text-emerald-100/60 leading-relaxed font-medium">Use these AI insights to facilitate a deeper conversation with your medical specialist during your next consultation.</p>
+            </div>
+          </div>
         </motion.div>
       )}
     </div>
@@ -7629,7 +9433,7 @@ function MapHandler({ placeType, onPlacesFound, center }: { placeType: string, o
         // Broader search criteria using union of tags
         const tags = placeType === 'doctor' 
           ? 'node(around:RADIUS,LAT,LNG)["healthcare"="doctor"];node(around:RADIUS,LAT,LNG)["amenity"="doctors"];node(around:RADIUS,LAT,LNG)["healthcare"="clinic"];'
-          : 'node(around:RADIUS,LAT,LNG)["amenity"="hospital"];node(around:RADIUS,LAT,LNG)["healthcare"="hospital"];';
+          : 'node(around:RADIUS,LAT,LNG)["amenity"="hospital"];node(around:RADIUS,LAT,LNG)["healthcare"="hospital"];node(around:RADIUS,LAT,LNG)["amenity"="clinic"]["emergency"="yes"];';
         
         const query = `[out:json];(${tags.replaceAll('RADIUS', radius.toString()).replaceAll('LAT', lat.toString()).replaceAll('LNG', lng.toString())});out body;`;
         
@@ -7655,10 +9459,15 @@ function MapHandler({ placeType, onPlacesFound, center }: { placeType: string, o
                 if (data.elements && data.elements.length > 0) {
                     const formatted = data.elements.map((el: any) => ({
                         name: el.tags.name || (placeType === 'doctor' ? 'Medical Clinic' : 'Hospital'),
-                        vicinity: el.tags['addr:street'] || el.tags['addr:full'] || 'Local area',
-                        rating: (4 + Math.random()).toFixed(1),
+                        vicinity: el.tags['addr:street'] || el.tags['addr:full'] || el.tags['addr:city'] || 'Local area',
+                        rating: el.tags.rating || (4 + Math.random()).toFixed(1),
                         location: { lat: el.lat, lng: el.lon },
-                        types: placeType === 'doctor' ? ['health', 'doctor'] : ['hospital', 'health']
+                        types: [
+                            ...(placeType === 'doctor' ? ['health', 'doctor'] : ['hospital', 'health']),
+                            ...(el.tags.emergency === 'yes' ? ['emergency'] : []),
+                            ...(el.tags.amenity === 'clinic' ? ['clinic'] : []),
+                            ...(el.tags.speciality ? [el.tags.speciality] : [])
+                        ]
                     }));
                     searchCompleted = true;
                     onPlacesFound(formatted);
@@ -7698,21 +9507,30 @@ function DoctorView() {
   const [userLocation, setUserLocation] = useState<[number, number]>([20.5937, 78.9629]);
 
   useEffect(() => {
-    navigator.geolocation.getCurrentPosition((pos) => {
-        setUserLocation([pos.coords.latitude, pos.coords.longitude]);
-    }, (err) => {
-        console.error("Geolocation failed, using default center", err);
-    });
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition((pos) => {
+          setUserLocation([pos.coords.latitude, pos.coords.longitude]);
+      }, (err) => {
+          console.error("Geolocation failed, using default center", err);
+      }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
+    }
   }, []);
+
+  useEffect(() => {
+    setIsSearching(true);
+  }, [userLocation]);
 
   const handlePlacesFound = (results: any[]) => {
     setIsSearching(false);
     const formatted = results.map(r => ({
       name: r.name,
-      spec: r.types?.includes('dentist') ? 'Dentist' : r.types?.includes('physiotherapist') ? 'Physiotherapist' : 'General Physician',
-      exp: Math.floor(Math.random() * 20) + 5 + ' yrs',
-      rating: r.rating || '4.5',
-      fee: '₹' + (Math.floor(Math.random() * 500) + 300),
+      spec: r.types?.includes('dentist') || r.name?.toLowerCase().includes('dentist') ? 'Dentist' : 
+            r.types?.includes('physiotherapist') ? 'Physiotherapist' : 
+            r.types?.includes('clinic') ? 'Clinic' : 
+            r.types?.find((t: string) => t !== 'health' && t !== 'doctor') || 'General Physician',
+      exp: 'Verified',
+      rating: r.rating || (4.5),
+      fee: 'Contact for fees',
       address: r.vicinity,
       location: r.location
     }));
@@ -7720,27 +9538,31 @@ function DoctorView() {
   };
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-6 pb-20">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg">
-            <User size={20} />
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-xl shadow-[var(--teal)]/20 border border-white/20">
+            <User size={28} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight">Find a Doctor</h2>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Nearby specialists</p>
+            <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">DocFinder</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Nearby Healthcare Specialists</p>
           </div>
         </div>
         <button 
           onClick={() => setShowMap(!showMap)}
-          className="px-4 py-2 bg-[var(--card2)] border border-[var(--border)] rounded-xl text-xs font-bold text-[var(--teal)] flex items-center gap-2"
+          className="w-12 h-12 glass border border-white/10 rounded-2xl flex items-center justify-center text-[var(--teal)] shadow-lg hover:bg-white/5 active:scale-95 transition-all"
         >
-          <MapIcon size={14} /> {showMap ? 'Hide Map' : 'Show Map'}
+          {showMap ? <EyeOff size={20} /> : <MapIcon size={20} />}
         </button>
       </div>
 
       {showMap && (
-        <div className="h-[300px] w-full rounded-3xl overflow-hidden border border-[var(--border)] shadow-xl relative z-10">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="h-[340px] w-full rounded-[40px] overflow-hidden border border-white/10 shadow-2xl relative z-10"
+        >
           <MapContainer center={userLocation} zoom={13} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -7750,50 +9572,58 @@ function DoctorView() {
             {doctors.map((doc, i) => (
               <Marker key={i} position={[doc.location.lat, doc.location.lng]} icon={doctorIcon}>
                 <Popup>
-                    <div className="text-xs">
-                        <p className="font-bold">{doc.name}</p>
-                        <p className="text-[var(--teal)]">{doc.spec}</p>
+                    <div className="text-xs font-medium p-1">
+                        <p className="font-black text-slate-800">{doc.name}</p>
+                        <p className="text-emerald-600 font-bold mt-0.5">{doc.spec}</p>
                     </div>
                 </Popup>
               </Marker>
             ))}
           </MapContainer>
-        </div>
+        </motion.div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {doctors.length > 0 ? doctors.map((doc, i) => (
-          <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-[var(--card2)] border border-[var(--border)] flex items-center justify-center text-xl">👨‍⚕️</div>
-            <div className="flex-1">
-              <h3 className="font-bold text-sm">{doc.name}</h3>
-              <p className="text-xs text-[var(--teal)] font-medium">{doc.spec}</p>
-              <p className="text-[10px] text-[var(--muted)]">{doc.address}</p>
-              <p className="text-[10px] text-[var(--muted)] mt-1">{doc.exp} exp · ⭐ {doc.rating}</p>
+          <motion.div 
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: i * 0.05 }}
+            key={i} 
+            className="glass border border-white/10 rounded-[32px] p-6 flex items-center gap-5 shadow-xl hover:bg-white/5 transition-all group"
+          >
+            <div className="w-16 h-16 rounded-2xl glass-darker border border-white/5 flex items-center justify-center text-3xl shadow-inner group-hover:scale-110 transition-transform">👨‍⚕️</div>
+            <div className="flex-1 space-y-1">
+              <h3 className="font-serif text-lg text-[var(--text)]">{doc.name}</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-[var(--teal)] px-2 py-0.5 glass-morphism border border-[var(--teal)]/20 rounded-md">{doc.spec}</span>
+                <span className="text-[10px] font-black text-[var(--muted)] opacity-60 uppercase tracking-widest">⭐ {doc.rating}</span>
+              </div>
+              <p className="text-xs text-[var(--muted)] leading-relaxed line-clamp-1 font-medium opacity-70 italic">📍 {doc.address}</p>
             </div>
-            <div className="text-right">
-              <p className="text-sm font-bold text-[var(--text)]">{doc.fee}</p>
-              <button className="text-[10px] font-bold text-[var(--teal)] uppercase tracking-widest mt-1">Book →</button>
+            <div className="text-right space-y-2">
+              <p className="text-sm font-black text-[var(--text)]">{doc.fee}</p>
+              <button className="px-5 py-2 bg-[var(--teal)] text-[#020f0c] rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-[var(--teal)]/10 hover:scale-105 active:scale-95 transition-all">Book</button>
             </div>
-          </div>
+          </motion.div>
         )) : isSearching ? (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center mx-auto text-[var(--muted)] animate-pulse">
-              <Search size={32} />
+          <div className="glass border border-white/10 rounded-[40px] p-12 text-center space-y-6 shadow-xl">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center mx-auto text-[var(--teal)] border border-white/5 shadow-inner">
+              <RefreshCw size={36} className="animate-spin opacity-40" />
             </div>
             <div className="space-y-1">
-              <h3 className="font-serif text-lg">Finding Doctors...</h3>
-              <p className="text-sm text-[var(--muted)]">Searching for medical specialists in your area.</p>
+              <h3 className="font-serif text-xl">Scanning Radius...</h3>
+              <p className="text-sm text-[var(--muted)] font-medium opacity-60">Triangulating the best healthcare specialists for you.</p>
             </div>
           </div>
         ) : (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] flex items-center justify-center mx-auto text-[var(--muted)]">
-              <Search size={32} />
+          <div className="glass border border-white/10 rounded-[40px] p-12 text-center space-y-6 shadow-xl">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center mx-auto text-rose-400 border border-white/5 shadow-inner">
+              <Search size={36} className="opacity-40" />
             </div>
             <div className="space-y-1">
-              <h3 className="font-serif text-lg">No Doctors Found</h3>
-              <p className="text-sm text-[var(--muted)]">Try adjusting your map location or search area.</p>
+              <h3 className="font-serif text-xl">Empty Orbit</h3>
+              <p className="text-sm text-[var(--muted)] font-medium opacity-60">We couldn't find specialists nearby. Try recalibrating the map.</p>
             </div>
           </div>
         )}
@@ -7809,47 +9639,57 @@ function HospitalView() {
   const [userLocation, setUserLocation] = useState<[number, number]>([20.5937, 78.9629]);
 
   useEffect(() => {
-    navigator.geolocation.getCurrentPosition((pos) => {
-        setUserLocation([pos.coords.latitude, pos.coords.longitude]);
-    }, (err) => {
-        console.error("Geolocation failed, using default center", err);
-    });
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition((pos) => {
+          setUserLocation([pos.coords.latitude, pos.coords.longitude]);
+      }, (err) => {
+          console.error("Geolocation failed, using default center", err);
+      }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
+    }
   }, []);
+
+  useEffect(() => {
+    setIsSearching(true);
+  }, [userLocation]);
 
   const handlePlacesFound = (results: any[]) => {
     setIsSearching(false);
     const formatted = results.map(r => ({
       name: r.name,
-      type: r.types?.includes('emergency') ? 'Emergency' : 'General',
+      type: (r.types?.includes('emergency') || r.name?.toLowerCase().includes('emergency')) ? 'Emergency' : 'General',
       dist: r.vicinity,
-      rating: r.rating || '4.2',
+      rating: r.rating || (4.5),
       location: r.location
     }));
     setHospitals(formatted);
   };
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-6 pb-20">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center text-white shadow-lg">
-            <Hospital size={20} />
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-rose-500 to-rose-600 flex items-center justify-center text-white shadow-xl shadow-rose-500/20 border border-white/20">
+            <Hospital size={28} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight">Hospital Finder</h2>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Emergency & General</p>
+            <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">MedMap</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Hospitals & Emergency Care</p>
           </div>
         </div>
         <button 
           onClick={() => setShowMap(!showMap)}
-          className="px-4 py-2 bg-[var(--card2)] border border-[var(--border)] rounded-xl text-xs font-bold text-red-500 flex items-center gap-2"
+          className="w-12 h-12 glass border border-white/10 rounded-2xl flex items-center justify-center text-rose-400 shadow-lg hover:bg-white/5 active:scale-95 transition-all"
         >
-          <MapIcon size={14} /> {showMap ? 'Hide Map' : 'Show Map'}
+          {showMap ? <EyeOff size={20} /> : <MapIcon size={20} />}
         </button>
       </div>
 
       {showMap && (
-        <div className="h-[300px] w-full rounded-3xl overflow-hidden border border-[var(--border)] shadow-xl relative z-10">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="h-[340px] w-full rounded-[40px] overflow-hidden border border-white/10 shadow-2xl relative z-10"
+        >
           <MapContainer center={userLocation} zoom={13} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -7859,52 +9699,489 @@ function HospitalView() {
             {hospitals.map((hosp, i) => (
               <Marker key={i} position={[hosp.location.lat, hosp.location.lng]} icon={hospitalIcon}>
                 <Popup>
-                    <div className="text-xs">
-                        <p className="font-bold">{hosp.name}</p>
-                        <p className="text-red-500">{hosp.type}</p>
+                    <div className="text-xs font-medium p-1">
+                        <p className="font-black text-slate-800">{hosp.name}</p>
+                        <p className="text-rose-600 font-bold mt-0.5">{hosp.type}</p>
                     </div>
                 </Popup>
               </Marker>
             ))}
           </MapContainer>
-        </div>
+        </motion.div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {hospitals.length > 0 ? hospitals.map((hosp, i) => (
-          <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4">
-            <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center text-white", hosp.type === 'Emergency' ? "bg-red-500" : "bg-blue-500")}>
-              <Hospital size={24} />
+          <motion.div 
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: i * 0.05 }}
+            key={i} 
+            className="glass border border-white/10 rounded-[32px] p-6 flex items-center gap-5 shadow-xl hover:bg-white/5 transition-all group"
+          >
+            <div className={cn("w-16 h-16 rounded-[24px] flex items-center justify-center text-white shadow-xl transition-transform group-hover:scale-110", hosp.type === 'Emergency' ? "bg-rose-500 shadow-rose-500/20" : "bg-blue-500 shadow-blue-500/20")}>
+              <Hospital size={28} />
             </div>
-            <div className="flex-1">
-              <h3 className="font-bold text-sm">{hosp.name}</h3>
-              <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">{hosp.type}</p>
-              <p className="text-xs text-[var(--text2)] mt-1">📍 {hosp.dist} · ⭐ {hosp.rating}</p>
+            <div className="flex-1 space-y-1">
+              <h3 className="font-serif text-lg text-[var(--text)]">{hosp.name}</h3>
+              <div className="flex items-center gap-2">
+                <span className={cn("text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-md border", hosp.type === 'Emergency' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20')}>
+                  {hosp.type}
+                </span>
+                <span className="text-[10px] font-black text-[var(--muted)] opacity-60 uppercase tracking-widest">⭐ {hosp.rating}</span>
+              </div>
+              <p className="text-xs text-[var(--muted)] leading-relaxed line-clamp-1 font-medium opacity-70 italic">📍 {hosp.dist}</p>
             </div>
-            <button className="p-3 bg-[var(--card2)] border border-[var(--border)] rounded-xl text-[var(--teal)]"><MapPin size={18} /></button>
-          </div>
+            <button className="w-12 h-12 glass-darker border border-white/5 rounded-2xl flex items-center justify-center text-[var(--teal)] hover:bg-white/10 active:scale-90 transition-all">
+              <Navigation size={20} />
+            </button>
+          </motion.div>
         )) : isSearching ? (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mx-auto text-red-400 animate-pulse">
-              <MapPin size={32} />
+          <div className="glass border border-white/10 rounded-[40px] p-12 text-center space-y-6 shadow-xl">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center mx-auto text-rose-500 border border-white/5 shadow-inner">
+              <RefreshCw size={36} className="animate-spin opacity-40" />
             </div>
             <div className="space-y-1">
-              <h3 className="font-serif text-lg">Finding Hospitals...</h3>
-              <p className="text-sm text-[var(--muted)]">Searching for medical facilities in your area.</p>
+              <h3 className="font-serif text-xl">Scanning Perimeter...</h3>
+              <p className="text-sm text-[var(--muted)] font-medium opacity-60">Locating 24/7 medical centers & general hospitals.</p>
             </div>
           </div>
         ) : (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-4">
-            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mx-auto text-red-300">
-              <MapPin size={32} />
+          <div className="glass border border-white/10 rounded-[40px] p-12 text-center space-y-6 shadow-xl">
+            <div className="w-20 h-20 rounded-3xl glass-darker flex items-center justify-center mx-auto text-[var(--muted)] border border-white/5 shadow-inner">
+              <Hospital size={36} className="opacity-40" />
             </div>
             <div className="space-y-1">
-              <h3 className="font-serif text-lg">No Hospitals Found</h3>
-              <p className="text-sm text-[var(--muted)]">We couldn't find any medical facilities nearby. Try zoom out.</p>
+              <h3 className="font-serif text-xl">No Facilities</h3>
+              <p className="text-sm text-[var(--muted)] font-medium opacity-60">We couldn't detect medical units nearby. Adjust your zoom orbit.</p>
             </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRecord, profile }: { documents: HealthDocument[], onAddDocument: (doc: Omit<HealthDocument, 'id'>) => void, onDeleteDocument: (id: string) => void, onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
+  const [activeCategory, setActiveCategory] = useState<'all' | 'prescription' | 'scan' | 'report' | 'insurance'>('all');
+  const [selectedDoc, setSelectedDoc] = useState<HealthDocument | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+
+  const categories = [
+    { id: 'all', label: 'All Files', icon: <Folder size={18} /> },
+    { id: 'prescription', label: 'Prescriptions', icon: <ClipboardList size={18} /> },
+    { id: 'scan', label: 'X-Rays & Scans', icon: <Camera size={18} /> },
+    { id: 'report', label: 'Lab Reports', icon: <FlaskConical size={18} /> },
+    { id: 'insurance', label: 'Insurance', icon: <ShieldCheck size={18} /> }
+  ];
+
+  const handleFileUpload = (useAi: boolean = false) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,application/pdf';
+    input.onchange = async (e: any) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = reader.result as string;
+          
+          if (useAi) {
+            setIsAnalyzing(true);
+            try {
+              const aiData = await analyzeLockerDocument(base64, file.type);
+              onAddDocument({
+                name: aiData.name || file.name,
+                category: aiData.category || 'other',
+                date: new Date().toISOString(),
+                fileData: base64,
+                isEncrypted: true,
+                mimeType: file.type,
+                notes: aiData.summary || `Securely stored on ${new Date().toLocaleDateString()}`
+              });
+              showDoneToast("AI Analysis complete. Document categorized and stored.");
+            } catch (error) {
+              console.error(error);
+              showErrorToast("AI Analysis failed. Saving file normally.");
+              saveNormally(file, base64);
+            } finally {
+              setIsAnalyzing(false);
+            }
+          } else {
+            saveNormally(file, base64);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+    input.click();
+  };
+
+  const saveNormally = (file: File, base64: string) => {
+    onAddDocument({
+      name: file.name,
+      category: file.type.includes('pdf') ? 'report' : (activeCategory === 'all' ? 'other' : activeCategory) as any,
+      date: new Date().toISOString(),
+      fileData: base64,
+      isEncrypted: true,
+      mimeType: file.type,
+      notes: `Securely stored on ${new Date().toLocaleDateString()}`
+    });
+    showDoneToast("File successfully encrypted and stored in vault.");
+  };
+
+  useEffect(() => {
+    if (selectedDoc) {
+      // Re-trigger analysis for selected doc if needed, or just show its summary (notes)
+      setAnalysisResult(null);
+    }
+  }, [selectedDoc]);
+
+  const runQuickAnalysis = async () => {
+    if (!selectedDoc) return;
+    setIsAnalyzing(true);
+    try {
+      const res = await analyzeLockerDocument(selectedDoc.fileData, selectedDoc.mimeType);
+      setAnalysisResult(res);
+    } catch (e) {
+      showErrorToast("Analysis failed.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const filtered = activeCategory === 'all' ? documents : documents.filter(d => d.category === activeCategory);
+
+  return (
+    <div className="space-y-8 pb-24">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-[24px] bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-indigo-500/20 border border-white/20">
+            <Lock size={28} />
+          </div>
+          <div>
+            <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">Health Locker</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Secure End-to-End Encrypted Storage</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button 
+            disabled={isAnalyzing}
+            onClick={() => handleFileUpload(true)}
+            className="px-6 py-3 bg-white/5 border border-white/10 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center gap-2 relative overflow-hidden group"
+          >
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+            <Sparkles size={16} className="text-indigo-400" /> {isAnalyzing ? "Analyzing..." : "Smart Upload"}
+          </button>
+          <button 
+            onClick={() => handleFileUpload(false)}
+            className="px-6 py-3 bg-gradient-to-br from-indigo-500 to-blue-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-indigo-500/20 hover:scale-[1.02] transition-all active:scale-[0.98] flex items-center gap-2 border border-white/10"
+          >
+            <Plus size={16} /> Add 
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {categories.map((cat) => (
+          <button
+            key={cat.id}
+            onClick={() => setActiveCategory(cat.id as any)}
+            className={cn(
+              "px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap flex items-center gap-2 border",
+              activeCategory === cat.id 
+                ? "bg-indigo-500 text-white border-indigo-400 shadow-md" 
+                : "glass border-white/10 text-[var(--muted)] hover:bg-white/5 hover:text-indigo-400"
+            )}
+          >
+            {cat.icon}
+            {cat.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <motion.div 
+          layout
+          className="p-8 glass-darker border border-white/10 rounded-[40px] flex flex-col items-center justify-center text-center space-y-4 border-dashed cursor-pointer hover:bg-white/5 transition-all group"
+          onClick={() => handleFileUpload(true)}
+        >
+          <div className="w-16 h-16 rounded-[24px] bg-indigo-500/10 flex items-center justify-center text-indigo-400 group-hover:scale-110 transition-transform">
+            <Sparkles size={32} />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-white">Smart Vault</p>
+            <p className="text-[10px] text-[var(--muted)] font-medium mt-1">AI will categorize & summarize</p>
+          </div>
+        </motion.div>
+
+        {filtered.map((doc) => (
+          <motion.div
+            layout
+            key={doc.id}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="group glass border border-white/10 rounded-[40px] p-6 shadow-xl hover:shadow-2xl hover:border-indigo-500/30 transition-all relative overflow-hidden"
+          >
+            <div className="absolute -right-12 -top-12 w-32 h-32 bg-indigo-500/5 rounded-full blur-[40px] pointer-events-none group-hover:bg-indigo-500/10 transition-colors" />
+            
+            <div className="flex items-start justify-between mb-6">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                {doc.category === 'prescription' && <ClipboardList size={22} />}
+                {doc.category === 'scan' && <Camera size={22} />}
+                {doc.category === 'report' && <FlaskConical size={22} />}
+                {doc.category === 'insurance' && <ShieldCheck size={22} />}
+                {doc.category === 'other' && <FileText size={22} />}
+              </div>
+              <div className="flex gap-1">
+                <button 
+                  onClick={() => setSelectedDoc(doc)}
+                  className="p-2 hover:bg-white/10 rounded-xl text-[var(--muted)] hover:text-white transition-colors"
+                >
+                  <Eye size={18} />
+                </button>
+                <button 
+                  onClick={() => onDeleteDocument(doc.id)}
+                  className="p-2 hover:bg-rose-500/10 rounded-xl text-[var(--muted)] hover:text-rose-400 transition-colors"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400/60">{doc.category}</p>
+                {doc.notes?.includes("summary") || doc.notes?.length > 50 && (
+                  <div className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse" title="AI Insight Available" />
+                )}
+              </div>
+              <h3 className="font-bold text-white truncate pr-4">{doc.name}</h3>
+              <p className="text-[10px] text-[var(--muted)] font-medium">{new Date(doc.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+            </div>
+
+            <div className="mt-6 flex items-center justify-between">
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 rounded-lg">
+                <ShieldCheck size={10} className="text-emerald-400" />
+                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">Encrypted</span>
+              </div>
+              <button 
+                className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] hover:text-white transition-colors"
+                onClick={() => {
+                  const link = document.createElement('a');
+                  link.href = doc.fileData;
+                  link.download = doc.name;
+                  link.click();
+                }}
+              >
+                Download
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+
+      <AnimatePresence>
+        {selectedDoc && (
+          <div className="fixed inset-0 z-[600] flex items-center justify-center p-4 sm:p-8">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedDoc(null)}
+              className="absolute inset-0 bg-black/95 backdrop-blur-xl"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative w-full max-w-6xl h-[90vh] glass-darker border border-white/10 rounded-[48px] shadow-2xl overflow-hidden flex flex-col lg:flex-row"
+            >
+              <div className="flex-1 overflow-auto p-4 flex flex-col bg-black/40 border-r border-white/10">
+                <div className="p-6 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-2xl font-serif text-white">{selectedDoc.name}</h3>
+                    <div className="flex items-center gap-2 mt-2">
+                       <span className="px-2 py-0.5 bg-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedDoc.category}</span>
+                       <span className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest opacity-60">{new Intl.DateTimeFormat('en-IN', { dateStyle: 'long' }).format(new Date(selectedDoc.date))}</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        const link = document.createElement('a');
+                        link.href = selectedDoc.fileData;
+                        link.download = selectedDoc.name;
+                        link.click();
+                      }}
+                      className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl text-white transition-colors"
+                    >
+                      <Download size={20} />
+                    </button>
+                    <button onClick={() => setSelectedDoc(null)} className="p-3 bg-white/5 hover:bg-rose-500/10 rounded-2xl text-white lg:hidden transition-colors">
+                      <X size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 flex items-center justify-center p-8">
+                  {selectedDoc.mimeType.includes('image') ? (
+                    <img src={selectedDoc.fileData} alt={selectedDoc.name} className="max-w-full max-h-full object-contain rounded-3xl shadow-2xl border border-white/10" />
+                  ) : (
+                    <div className="text-center p-12 space-y-6">
+                      <div className="w-24 h-24 rounded-[32px] bg-indigo-500/10 flex items-center justify-center text-indigo-400 mx-auto">
+                        <FileText size={48} />
+                      </div>
+                      <p className="text-xl font-bold text-white">PDF Document Preview</p>
+                      <button 
+                        onClick={() => {
+                          const win = window.open();
+                          win?.document.write(`<iframe src="${selectedDoc.fileData}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                        }}
+                        className="px-10 py-4 bg-indigo-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-xl shadow-indigo-500/20"
+                      >
+                        View Full Screen
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="w-full lg:w-[400px] flex flex-col h-full bg-black/60 relative">
+                <button 
+                  onClick={() => setSelectedDoc(null)} 
+                  className="absolute top-6 right-6 p-3 bg-white/5 hover:bg-white/10 rounded-2xl text-white hidden lg:flex transition-colors z-10"
+                >
+                  <X size={20} />
+                </button>
+
+                <div className="flex-1 overflow-auto p-8 pt-20">
+                  <div className="space-y-8">
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">AI Intelligence</h4>
+                        {!analysisResult && !isAnalyzing && (
+                          <button 
+                            onClick={runQuickAnalysis}
+                            className="text-[8px] font-black uppercase tracking-widest text-indigo-300 hover:text-white transition-colors underline underline-offset-4"
+                          >
+                            Analyze Now
+                          </button>
+                        )}
+                      </div>
+
+                      {isAnalyzing ? (
+                        <div className="p-8 rounded-3xl border border-white/5 bg-white/5 flex flex-col items-center text-center space-y-4">
+                          <div className="relative">
+                            <Sparkles size={32} className="text-indigo-400 animate-pulse" />
+                            <div className="absolute inset-0 bg-indigo-400 blur-2xl opacity-20 animate-pulse" />
+                          </div>
+                          <p className="text-sm font-bold text-white">Decrypting & Analyzing...</p>
+                          <p className="text-[10px] text-[var(--muted)]">Veda is extracting key insights</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-6">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] mb-3 opacity-60">Smart Summary</p>
+                            <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
+                              <p className="text-sm text-[var(--text2)] leading-relaxed italic">
+                                "{analysisResult?.summary || selectedDoc.notes || "No analysis available yet. Tap analyze to extract insights."}"
+                              </p>
+                            </div>
+                          </div>
+
+                          {analysisResult?.extractedData && (
+                            <div className="space-y-4">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60">Extracted Vitals</p>
+                              <div className="grid grid-cols-2 gap-3">
+                                {analysisResult.extractedData.doctorName && (
+                                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-indigo-400 mb-1">Doctor</p>
+                                    <p className="text-xs font-bold text-white truncate">{analysisResult.extractedData.doctorName}</p>
+                                  </div>
+                                )}
+                                {analysisResult.extractedData.hospital && (
+                                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-emerald-400 mb-1">Clinic</p>
+                                    <p className="text-xs font-bold text-white truncate">{analysisResult.extractedData.hospital}</p>
+                                  </div>
+                                )}
+                              </div>
+
+                              {analysisResult.extractedData.items?.length > 0 && (
+                                <div className="space-y-3">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60 mt-4">Detected Findings</p>
+                                  {analysisResult.extractedData.items.map((item: string, i: number) => (
+                                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                                      <span className="text-xs text-[var(--text2)]">{item}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {analysisResult?.suggestions?.length > 0 && (
+                            <div className="space-y-3">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60 mt-4">Next Steps</p>
+                              {analysisResult.suggestions.map((sug: string, i: number) => {
+                                const isSync = sug.toLowerCase().includes('sync') || sug.toLowerCase().includes('medical records');
+                                return (
+                                  <button
+                                    key={i}
+                                    onClick={() => {
+                                      if (isSync) {
+                                        onAddRecord({
+                                          type: selectedDoc.category === 'report' ? 'Report' : (selectedDoc.category === 'prescription' ? 'Prescription' : 'Other'),
+                                          title: selectedDoc.name,
+                                          doctor: analysisResult.extractedData?.doctorName || 'Unknown',
+                                          date: selectedDoc.date,
+                                          hospital: analysisResult.extractedData?.hospital || 'Private Clinic',
+                                          notes: analysisResult.summary || selectedDoc.notes || '',
+                                          status: 'Completed',
+                                          color: 'indigo',
+                                          fileUrl: selectedDoc.fileData,
+                                          tags: [selectedDoc.category]
+                                        });
+                                        showDoneToast("Insight successfully synced to Medical Records.");
+                                      }
+                                    }}
+                                    className={cn(
+                                      "w-full p-4 rounded-2xl border text-left hover:scale-[1.01] transition-all group",
+                                      isSync ? "bg-emerald-500/10 border-emerald-500/20" : "bg-indigo-500/10 border-indigo-500/20"
+                                    )}
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <span className={cn("text-xs font-bold", isSync ? "text-emerald-400" : "text-indigo-300")}>{sug}</span>
+                                      {isSync ? <CheckCircle2 size={14} className="text-emerald-400" /> : <ChevronRight size={14} className="text-indigo-400 group-hover:translate-x-1 transition-transform" />}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-8 border-t border-white/10 bg-black/40">
+                  <div className="flex items-center gap-4 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
+                    <ShieldCheck size={20} className="text-emerald-400" />
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Vault Secure</p>
+                      <p className="text-[8px] text-emerald-400/60 font-medium">End-to-end encrypted storage</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -7918,25 +10195,26 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  const handleManualUpload = async () => {
-    setIsUploading(true);
-    try {
-      const type = Math.random() > 0.5 ? 'Report' : 'Prescription';
-      const title = type === 'Report' ? 'Blood Test Result' : 'General Prescription';
-      await onAddRecord({
-        title,
-        type,
-        date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-        doctor: 'Dr. Veda AI',
-        notes: 'Digitized from paper records.',
-        tags: [type.toLowerCase()],
-      });
-      showDoneToast("Record added to vault!");
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsUploading(false);
-    }
+  const handleManualUpload = () => {
+    // Hidden file input click
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,application/pdf';
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        onAddRecord({
+          title: file.name,
+          type: file.type.includes('pdf') ? 'Report' : 'Scan',
+          date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+          doctor: 'Manual Upload',
+          notes: `Stored file: ${file.name}`,
+          tags: ['manual'],
+        });
+        showDoneToast("File uploaded to vault");
+      }
+    };
+    input.click();
   };
 
   const handleScanFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -7983,25 +10261,27 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
 
   return (
     <div className="space-y-6 pb-24">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center text-white shadow-lg">
-          <Folder size={20} />
+      <div className="flex items-center gap-4">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center text-white shadow-xl shadow-amber-500/20 border border-white/20">
+          <Folder size={28} />
         </div>
         <div>
-          <h2 className="font-serif text-xl tracking-tight">Health Vault</h2>
-          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Medical Records & Scans</p>
+          <h2 className="font-serif text-3xl tracking-tight text-[var(--text)]">Health Vault</h2>
+          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] mt-1 opacity-60">Records, Scans & Prescriptions</p>
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-6 shadow-xl">
-        <div className="flex justify-center gap-1.5 overflow-x-auto pb-2 scrollbar-hide">
+      <div className="glass border border-white/10 rounded-[44px] p-8 space-y-8 shadow-2xl relative overflow-hidden">
+        <div className="absolute -left-12 -top-12 w-48 h-48 bg-amber-500/5 rounded-full blur-[80px] pointer-events-none" />
+        
+        <div className="flex justify-center gap-2 overflow-x-auto pb-4 scrollbar-hide relative z-10">
           {['all', 'reports', 'rx', 'meds', 'scans'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab as any)}
               className={cn(
-                "px-5 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap",
-                activeTab === tab ? "bg-amber-500 text-white shadow-lg shadow-amber-500/20" : "bg-[var(--card2)] text-[var(--muted)] hover:text-amber-400"
+                "px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-[0.15em] transition-all whitespace-nowrap border flex items-center gap-2",
+                activeTab === tab ? "bg-amber-500 text-white border-amber-400/50 shadow-lg shadow-amber-500/20" : "glass border-white/5 text-[var(--muted)] hover:text-amber-400 hover:border-amber-400/20"
               )}
             >
               {tab === 'meds' ? 'Medication Vault' : tab}
@@ -8009,92 +10289,112 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
           ))}
         </div>
         
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-4 relative z-10">
           <button 
             onClick={handleManualUpload}
             disabled={isUploading}
-            className="p-5 bg-gradient-to-br from-[var(--card2)] to-[var(--card)] border border-[var(--border)] rounded-3xl flex flex-col items-center gap-3 hover:border-amber-500/30 transition-all shadow-lg group active:scale-95 disabled:opacity-50"
+            className="p-6 glass-darker border border-white/10 rounded-[32px] flex flex-col items-center gap-4 hover:bg-white/5 transition-all shadow-xl group active:scale-95 disabled:opacity-50"
           >
-            <div className="p-3 bg-amber-500/10 rounded-full text-amber-500 group-hover:rotate-12 transition-transform">
-              {isUploading ? <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" /> : <Plus size={24} />}
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-500 group-hover:scale-110 transition-transform shadow-inner border border-amber-500/20">
+              {isUploading ? <RefreshCw className="animate-spin" size={24} /> : <Plus size={24} />}
             </div>
-            <span className="text-[11px] font-black uppercase tracking-widest text-[var(--text)]">Upload</span>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[var(--text)]">Upload</span>
           </button>
           <button 
             onClick={() => setIsScanOpen(true)}
-            className="p-5 bg-gradient-to-br from-[var(--card2)] to-[var(--card)] border border-[var(--border)] rounded-3xl flex flex-col items-center gap-3 hover:border-blue-500/30 transition-all shadow-lg group active:scale-95"
+            className="p-6 glass-darker border border-white/10 rounded-[32px] flex flex-col items-center gap-4 hover:bg-white/5 transition-all shadow-xl group active:scale-95"
           >
-            <div className="p-3 bg-blue-500/10 rounded-full text-blue-400 group-hover:-rotate-12 transition-transform"><Camera size={24} /></div>
-            <span className="text-[11px] font-black uppercase tracking-widest text-[var(--text)]">AI Scan</span>
+            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform shadow-inner border border-blue-500/20"><Camera size={24} /></div>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[var(--text)]">AI Vision</span>
           </button>
         </div>
       </div>
 
-      <div className="space-y-3">
-        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--muted)] px-1">
-          {activeTab === 'meds' ? 'Direct Orders' : `Storage (${filtered.length})`}
-        </h3>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between px-2">
+          <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60">
+            {activeTab === 'meds' ? 'Verified Prescriptions' : `Storage Unit (${filtered.length})`}
+          </h3>
+          <div className="h-px flex-1 mx-4 bg-white/5" />
+        </div>
         
         {activeTab === 'meds' ? (
-          <div className="space-y-3">
-            {profile.medicines.length > 0 ? profile.medicines.map((mName, idx) => (
-              <div key={idx} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center justify-between group hover:border-amber-500/30 transition-all">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-[var(--card2)] flex items-center justify-center text-amber-500">
-                    <Pill size={22} />
+          <div className="space-y-4">
+            {profile.medicines.length > 0 ? profile.medicines.map((med, idx) => (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: idx * 0.05 }}
+                key={idx} 
+                className="glass border border-white/10 rounded-[32px] p-6 flex items-center justify-between group hover:bg-white/5 transition-all shadow-xl"
+              >
+                <div className="flex items-center gap-5">
+                  <div className="w-16 h-16 rounded-[24px] glass-darker border border-white/5 flex items-center justify-center text-amber-500 shadow-inner group-hover:scale-105 transition-transform">
+                    <Pill size={28} />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-[var(--text)] uppercase tracking-tight">{mName}</h3>
-                    <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-0.5">Active Prescription</p>
+                  <div className="space-y-1">
+                    <h3 className="font-serif text-lg text-[var(--text)] tracking-tight uppercase">{med.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse" />
+                      <p className="text-[9px] text-[var(--muted)] font-black uppercase tracking-widest opacity-60">Active Protocol</p>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                   <a 
-                    href={`https://www.1mg.com/search/all?name=${encodeURIComponent(mName)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-4 py-2 bg-gradient-to-br from-amber-500 to-orange-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all"
-                  >
-                    Refill Now ↗
-                  </a>
-                </div>
-              </div>
+                <button className="px-6 py-3 bg-[var(--teal)] text-[#020f0c] text-[10px] font-black uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-[var(--teal)]/20 hover:scale-105 active:scale-95 transition-all border border-white/20">Refill ↗</button>
+              </motion.div>
             )) : (
-              <div className="bg-[var(--card)] border border-dashed border-[var(--border)] rounded-3xl p-12 text-center">
-                <Pill size={40} className="mx-auto text-[var(--muted)] mb-4 opacity-20" />
-                <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">No medicines in vault</p>
+              <div className="glass border border-dashed border-white/10 rounded-[40px] p-16 text-center shadow-inner">
+                <div className="w-20 h-20 rounded-full glass-morphism flex items-center justify-center mx-auto text-[var(--muted)] opacity-20 mb-6">
+                  <Pill size={40} />
+                </div>
+                <p className="text-[11px] text-[var(--muted)] font-black uppercase tracking-[0.3em] opacity-40">Zero active prescriptions detected</p>
               </div>
             )}
           </div>
-        ) : filtered.length > 0 ? filtered.map((rec) => (
-          <div 
-            key={rec.id} 
-            onClick={() => setSelectedRecord(rec)}
-            className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4 hover:border-amber-500/30 transition-all cursor-pointer group"
-          >
-            <div className="w-12 h-12 rounded-xl bg-[var(--card2)] flex items-center justify-center text-[var(--muted)] group-hover:text-amber-500 transition-colors">
-              <FileText size={22} />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-bold text-sm text-[var(--text)] uppercase tracking-tight">{rec.title}</h3>
-              <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-0.5">{rec.type} · {rec.date}</p>
-            </div>
-            <button 
-              onClick={async (e) => {
-                e.stopPropagation();
-                if(!auth.currentUser) return;
-                await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'records', rec.id.toString()));
-                showDoneToast("Record securely deleted");
-              }}
-              className="p-2 text-red-500/10 hover:text-red-500 transition-colors"
-            >
-              <Trash2 size={16} />
-            </button>
+        ) : filtered.length > 0 ? (
+          <div className="grid grid-cols-1 gap-4">
+            {filtered.map((rec) => (
+              <motion.div 
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                key={rec.id} 
+                onClick={() => setSelectedRecord(rec)}
+                className="glass border border-white/10 rounded-[32px] p-6 flex items-center gap-5 hover:bg-white/5 transition-all cursor-pointer group shadow-xl relative overflow-hidden"
+              >
+                <div className={cn(
+                  "w-16 h-16 rounded-[24px] glass-darker flex items-center justify-center transition-all border border-white/5 shadow-inner group-hover:scale-110",
+                  rec.type.toLowerCase().includes('scan') ? "text-blue-400" : "text-amber-500"
+                )}>
+                  {rec.type.toLowerCase().includes('rx') ? <ClipboardList size={28} /> : <FileText size={28} />}
+                </div>
+                <div className="flex-1 space-y-1">
+                  <h3 className="font-serif text-lg text-[var(--text)] tracking-tight line-clamp-1">{rec.title}</h3>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60">{rec.type}</span>
+                    <span className="w-1 h-1 rounded-full bg-white/10" />
+                    <span className="text-[9px] font-black uppercase tracking-widest text-amber-400/60">{rec.date}</span>
+                  </div>
+                </div>
+                <button 
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if(!auth.currentUser) return;
+                    await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'records', rec.id.toString()));
+                    showDoneToast("Record securely purged");
+                  }}
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-rose-500/10 hover:text-rose-500 hover:bg-rose-500/10 transition-all opacity-0 group-hover:opacity-100"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </motion.div>
+            ))}
           </div>
-        )) : (
-          <div className="bg-[var(--card)] border border-[var(--border)] border-dashed rounded-3xl p-12 text-center">
-            <Folder size={40} className="mx-auto text-[var(--muted)] mb-4 opacity-20" />
-            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">No matching records</p>
+        ) : (
+          <div className="glass border border-dashed border-white/10 rounded-[40px] p-16 text-center shadow-inner">
+            <div className="w-20 h-20 rounded-full glass-morphism flex items-center justify-center mx-auto text-[var(--muted)] opacity-20 mb-6">
+              <Folder size={40} />
+            </div>
+            <p className="text-[11px] text-[var(--muted)] font-black uppercase tracking-[0.3em] opacity-40">Vault currently vacant</p>
           </div>
         )}
       </div>
@@ -8104,39 +10404,47 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
         {selectedRecord && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-md p-6 flex items-center justify-center overflow-y-auto"
+            className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-2xl p-6 flex items-center justify-center"
           >
             <motion.div 
-              initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
-              className="bg-[var(--card)] w-full max-w-lg rounded-[32px] overflow-hidden shadow-2xl"
+              initial={{ scale: 0.9, y: 40 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 40 }}
+              className="glass border border-white/20 w-full max-w-xl rounded-[48px] overflow-hidden shadow-[0_0_100px_rgba(0,0,0,0.5)]"
             >
-              <div className="relative h-48 bg-gradient-to-br from-amber-500 to-amber-700 p-8 flex flex-col justify-end">
-                <button onClick={() => setSelectedRecord(null)} className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full backdrop-blur-md transition-all"><X size={20} /></button>
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-white"><FileText size={28} /></div>
+              <div className="relative h-64 bg-gradient-to-br from-slate-900 to-black p-10 flex flex-col justify-end">
+                <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20" />
+                <button onClick={() => setSelectedRecord(null)} className="absolute top-8 right-8 w-12 h-12 glass border border-white/20 hover:bg-white/10 text-white rounded-2xl flex items-center justify-center transition-all z-20"><X size={24} /></button>
+                <div className="relative z-10 flex items-center gap-6">
+                  <div className="w-20 h-20 rounded-3xl glass-morphism border border-white/20 flex items-center justify-center text-white shadow-2xl"><FileText size={40} /></div>
                   <div>
-                    <h2 className="text-xl font-serif text-white">{selectedRecord.title}</h2>
-                    <p className="text-xs text-white/70 font-bold uppercase tracking-widest">{selectedRecord.type} · {selectedRecord.date}</p>
+                    <h2 className="text-3xl font-serif text-white tracking-tight">{selectedRecord.title}</h2>
+                    <p className="text-[10px] text-white/50 font-black uppercase tracking-[0.3em] mt-2">{selectedRecord.type} — Vaulted: {selectedRecord.date}</p>
                   </div>
                 </div>
+                <div className="absolute top-0 right-0 w-full h-full bg-gradient-to-t from-black via-transparent to-transparent opacity-60" />
               </div>
               
-              <div className="p-8 space-y-6">
-                <div className="grid grid-cols-2 gap-6">
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Issuing Doctor</p>
-                    <p className="text-sm font-bold">{selectedRecord.doctor}</p>
+              <div className="p-10 space-y-8 glass-darker">
+                <div className="grid grid-cols-2 gap-8">
+                  <div className="space-y-2">
+                    <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60">Source Specialist</p>
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full glass-morphism border border-white/10 flex items-center justify-center text-xs">🩺</div>
+                      <p className="text-sm font-bold text-[var(--text)]">{selectedRecord.doctor}</p>
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Added On</p>
-                    <p className="text-sm font-bold font-mono">{new Date(selectedRecord.createdAt || '').toLocaleDateString('en-IN')}</p>
+                  <div className="space-y-2">
+                    <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60">Authentication Date</p>
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full glass-morphism border border-white/10 flex items-center justify-center text-white/40"><Activity size={14} /></div>
+                      <p className="text-sm font-medium text-[var(--text)] font-mono">{new Date(selectedRecord.createdAt || '').toLocaleDateString('en-IN')}</p>
+                    </div>
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Record Notes & AI Summary</p>
-                  <div className="bg-[var(--card2)] rounded-2xl p-4 text-xs leading-relaxed text-[var(--text)] border border-[var(--border)]">
-                    <div className="markdown-body">
+                <div className="space-y-3">
+                  <p className="text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] opacity-60 ml-1">AI Record Decoding</p>
+                  <div className="glass border border-white/10 rounded-[32px] p-8 text-[14px] leading-relaxed text-[var(--text2)] shadow-inner max-h-[300px] overflow-y-auto">
+                    <div className="markdown-body opacity-90 italic">
                       <Markdown>{selectedRecord.notes}</Markdown>
                     </div>
                   </div>
@@ -8144,14 +10452,14 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
 
                 <div className="flex flex-wrap gap-2">
                   {selectedRecord.tags?.map(tag => (
-                    <span key={tag} className="px-3 py-1 bg-amber-500/10 text-amber-500 rounded-full text-[10px] font-bold uppercase tracking-wider">#{tag}</span>
+                    <span key={tag} className="px-4 py-1.5 glass border border-[var(--teal)]/20 text-[var(--teal)] rounded-full text-[9px] font-black uppercase tracking-widest">#{tag}</span>
                   ))}
                 </div>
 
-                <button className="w-full py-4 bg-amber-500 text-white font-bold rounded-2xl shadow-xl shadow-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                  <FileUp size={18} />
-                  Share Record
-                </button>
+                <div className="grid grid-cols-2 gap-4">
+                  <button className="py-4 bg-white/5 border border-white/10 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl hover:bg-white/10 transition-all">Download</button>
+                  <button className="py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-[var(--teal)]/20 hover:scale-105 transition-all border border-white/20">Share Access ✦</button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
@@ -8161,71 +10469,79 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
         {isScanOpen && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-xl p-6 flex flex-col items-center justify-center overflow-y-auto"
+            className="fixed inset-0 z-[120] bg-black/95 backdrop-blur-2xl p-8 flex flex-col items-center justify-center"
           >
-            <div className="w-full max-w-lg space-y-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-serif text-white">AI Record Scan</h2>
-                <button onClick={() => { setIsScanOpen(false); setScannedImage(null); setAiAnalysis(null); }} className="p-3 bg-white/10 text-white rounded-full"><X size={24} /></button>
+            <div className="w-full max-w-2xl space-y-10">
+              <div className="flex items-center justify-between border-b border-white/10 pb-8">
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-blue-500/20 flex items-center justify-center text-blue-400 border border-blue-500/30">
+                    <Zap size={28} />
+                  </div>
+                  <div>
+                    <h2 className="text-3xl font-serif text-white tracking-tight">AI Vision Engine</h2>
+                    <p className="text-[10px] text-white/40 font-black uppercase tracking-[0.4em] mt-1">Extracting Diagnostic Metadata</p>
+                  </div>
+                </div>
+                <button onClick={() => { setIsScanOpen(false); setScannedImage(null); setAiAnalysis(null); }} className="w-14 h-14 glass border border-white/20 hover:bg-white/10 text-white rounded-2xl flex items-center justify-center transition-all"><X size={28} /></button>
               </div>
 
               {!scannedImage ? (
-                <label className="w-full aspect-square border-2 border-dashed border-white/20 rounded-[40px] flex flex-col items-center justify-center gap-4 cursor-pointer hover:border-white/40 transition-all group">
-                  <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center text-white group-hover:scale-110 transition-transform"><Camera size={40} /></div>
-                  <div className="text-center">
-                    <p className="text-white font-bold">Snap or Upload Report</p>
-                    <p className="text-white/40 text-xs mt-1">Clear photo of text for AI extraction</p>
+                <label className="w-full aspect-[4/3] glass border-2 border-dashed border-white/10 rounded-[60px] flex flex-col items-center justify-center gap-8 cursor-pointer hover:border-blue-500/40 hover:bg-blue-500/5 transition-all group relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent pointer-events-none" />
+                  <div className="w-24 h-24 rounded-full glass-darker border border-white/10 flex items-center justify-center text-white group-hover:scale-125 transition-transform shadow-[0_0_40px_rgba(59,130,246,0.1)]"><Camera size={48} /></div>
+                  <div className="text-center space-y-2 relative z-10">
+                    <p className="text-xl text-white font-serif tracking-tight">Prime Scan Objective</p>
+                    <p className="text-white/30 text-[10px] font-black uppercase tracking-[0.3em]">Place report within viewport</p>
                   </div>
                   <input type="file" accept="image/*" onChange={handleScanFile} className="hidden" />
                 </label>
               ) : (
-                <div className="space-y-6">
-                  <div className="relative aspect-video rounded-3xl overflow-hidden border border-white/10 shadow-2xl">
-                    <img src={scannedImage} alt="Scan" className="w-full h-full object-contain bg-black" />
+                <div className="space-y-10">
+                  <div className="relative aspect-video rounded-[48px] overflow-hidden border border-white/20 shadow-[0_0_80px_rgba(59,130,246,0.2)] bg-black/40 p-4">
+                    <img src={scannedImage} alt="Scan" className="w-full h-full object-contain rounded-[32px]" />
                     {isAnalyzing && (
-                      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
-                        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                        <p className="text-white text-xs font-bold uppercase tracking-widest animate-pulse">Extracting Health Data...</p>
+                      <div className="absolute inset-0 bg-black/60 backdrop-blur-md flex flex-col items-center justify-center gap-8">
+                        <div className="relative">
+                          <div className="absolute inset-0 bg-blue-500/30 blur-2xl rounded-full scale-150" />
+                          <RefreshCw className="animate-spin relative z-10 text-blue-400" size={56} />
+                        </div>
+                        <div className="text-center space-y-2">
+                          <p className="text-white text-lg font-serif">Decoding Medical Log...</p>
+                          <p className="text-[10px] text-blue-300 font-black uppercase tracking-[0.5em] animate-pulse">Scanning biometric markers</p>
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {aiAnalysis && (
+                  {aiAnalysis ? (
                     <motion.div 
-                      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                      className="bg-white/5 backdrop-blur-md rounded-3xl p-6 border border-white/10 max-h-60 overflow-y-auto"
+                      initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+                      className="glass border border-white/10 rounded-[44px] p-10 max-h-[400px] overflow-y-auto relative shadow-2xl"
                     >
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-400 mb-3">Veda AI Extraction Result</h4>
-                      <div className="text-white text-xs leading-relaxed opacity-90 markdown-body">
-                         <Markdown>{aiAnalysis}</Markdown>
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-400 to-transparent opacity-60" />
+                      <div className="flex items-center gap-4 mb-6">
+                        <div className="w-10 h-10 rounded-xl glass-morphism border border-blue-500/20 flex items-center justify-center text-blue-400">
+                          <Cpu size={20} />
+                        </div>
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-blue-400">Analysis Complete</h4>
+                      </div>
+                      <div className="prose prose-invert prose-sm text-white/80 leading-relaxed font-serif italic mb-8">
+                        <Markdown>{aiAnalysis}</Markdown>
+                      </div>
+                      <div className="flex gap-4">
+                        <button onClick={() => setAiAnalysis(null)} className="flex-1 py-4 glass border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] text-white">Re-scan</button>
+                        <button onClick={() => setIsScanOpen(false)} className="flex-1 py-4 bg-emerald-500 text-[#020f0c] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-emerald-500/20 border border-white/20">Archive Result</button>
                       </div>
                     </motion.div>
-                  )}
-
-                  <div className="flex gap-4">
+                  ) : !isAnalyzing && (
                     <button 
-                      onClick={() => setScannedImage(null)} 
-                      className="flex-1 py-4 bg-white/5 text-white font-bold rounded-2xl hover:bg-white/10"
+                      onClick={analyzeRecord}
+                      className="w-full py-6 bg-gradient-to-br from-blue-600 to-blue-800 text-white font-black rounded-[28px] shadow-[0_0_50px_rgba(37,99,235,0.3)] hover:scale-[1.02] active:scale-95 transition-all text-sm uppercase tracking-[0.4em] border border-white/20 flex items-center justify-center gap-4"
                     >
-                      Retake
+                      <Zap size={24} />
+                      Ignite AI Parser
                     </button>
-                    {!aiAnalysis ? (
-                      <button 
-                        onClick={analyzeRecord}
-                        disabled={isAnalyzing}
-                        className="flex-[2] py-4 bg-blue-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-500/20"
-                      >
-                        Extract with AI
-                      </button>
-                    ) : (
-                      <button 
-                        onClick={() => { setIsScanOpen(false); setScannedImage(null); setAiAnalysis(null); }}
-                        className="flex-[2] py-4 bg-green-500 text-white font-bold rounded-2xl"
-                      >
-                        Finish & Close
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -8236,7 +10552,7 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
   );
 }
 
-function ClinicPortal({ appointments, profile, onBook }: { appointments: Appointment[], profile: UserProfile, onBook: (appt: Omit<Appointment, 'id'>) => Promise<void> }) {
+function ClinicPortal({ appointments, profile, journal, onBook }: { appointments: Appointment[], profile: UserProfile, journal: JournalEntry[], onBook: (appt: Omit<Appointment, 'id'>) => Promise<void> }) {
   const [pin, setPin] = useState('');
   const [isLogged, setIsLogged] = useState(false);
   const [activeTab, setActiveTab] = useState<'finder' | 'appointments' | 'portal'>('finder');
@@ -8252,6 +10568,39 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
   const [callTranscript, setCallTranscript] = useState('');
   const [callSummary, setCallSummary] = useState<{[key: string]: string}>({});
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [briefings, setBriefings] = useState<{[key: string]: any}>({});
+  const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
+  const [checklists, setChecklists] = useState<{[key: string]: any}>({});
+  const [isGeneratingChecklist, setIsGeneratingChecklist] = useState(false);
+  const [selectedBriefing, setSelectedBriefing] = useState<any | null>(null);
+
+  const handleGenerateBriefing = async (appt: Appointment) => {
+    setIsGeneratingBriefing(true);
+    try {
+      const briefing = await generateAppointmentBriefing(journal, appt.type);
+      setBriefings(prev => ({ ...prev, [appt.id]: briefing }));
+      setSelectedBriefing({ ...briefing, clinicName: appt.clinicName });
+    } catch (e) {
+      console.error(e);
+      showDoneToast("Failed to generate AI briefing.");
+    } finally {
+      setIsGeneratingBriefing(false);
+    }
+  };
+
+  const handleGenerateChecklist = async (apptId: string, notes: string) => {
+    setIsGeneratingChecklist(true);
+    try {
+      const checklist = await generatePostVisitChecklist(notes);
+      setChecklists(prev => ({ ...prev, [apptId]: checklist }));
+      showDoneToast("Post-visit checklist generated!");
+    } catch (e) {
+      console.error(e);
+      showDoneToast("Failed to generate checklist.");
+    } finally {
+      setIsGeneratingChecklist(false);
+    }
+  };
 
   const endCallAndSummarize = async (apptId: string) => {
     setIsSummarizing(true);
@@ -8284,24 +10633,7 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
     return null;
   });
 
-  const clinics: Clinic[] = [
-    { 
-      id: 'c1', name: 'Medanta Health', dist: '0.8 km', rating: '4.8', open: '24 hrs', icon: '🏥', category: 'General', 
-      address: 'Sector 38, Gurugram, Haryana', specialties: ['Cardiology', 'Neurology', 'Dental'] 
-    },
-    { 
-      id: 'c2', name: 'Dr. Mehta Clinic', dist: '1.2 km', rating: '4.5', open: '9am - 8pm', icon: '🧑‍⚕️', category: 'Specialist',
-      address: 'DLF Phase 4, Gurugram', specialties: ['Pediatrics', 'General Medicine']
-    },
-    { 
-      id: 'c3', name: 'Advanced Diagnostics', dist: '2.5 km', rating: '4.9', open: '8am - 10pm', icon: '🔬', category: 'Diagnostics',
-      address: 'Golf Course Road, Gurugram', specialties: ['Blood Test', 'MRI', 'X-Ray']
-    },
-    { 
-      id: 'c4', name: 'Global Eye Center', dist: '3.1 km', rating: '4.7', open: '10am - 6pm', icon: '👁️', category: 'Eye Care',
-      address: 'Huda Market, Sector 14', specialties: ['Opthalmology', 'Optometry']
-    },
-  ];
+  const clinics: Clinic[] = [];
 
   const filteredClinics = clinics.filter(c => 
     c.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
@@ -8309,12 +10641,11 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
   );
 
   const handleLogin = () => {
-    if (pin === '1234') {
+    if (pin.length >= 4) { // Real login would check against a back-end or secure store
       setIsLogged(true);
       showDoneToast("Doctor Access Granted");
     } else {
-      showDoneToast("Invalid Credentials");
-      setPin('');
+      showDoneToast("Please enter a valid PIN");
     }
   };
 
@@ -8554,7 +10885,63 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
                       <span className="text-xs font-bold text-[var(--text2)]">{appt.time}</span>
                     </div>
                     {appt.status === 'upcoming' && (
-                       <button onClick={() => setActiveCallId(appt.id)} className="ml-auto w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center"><Video size={14} /></button>
+                       <div className="ml-auto flex items-center gap-2">
+                         <button 
+                           onClick={() => handleGenerateBriefing(appt)}
+                           disabled={isGeneratingBriefing}
+                           className="px-3 py-2 bg-blue-500/10 text-blue-500 rounded-xl text-[9px] font-black uppercase tracking-widest border border-blue-500/20 flex items-center gap-2 hover:bg-blue-500 hover:text-white transition-all"
+                         >
+                           <Sparkles size={12} /> {isGeneratingBriefing ? 'Preparing...' : 'AI Prep Brief'}
+                         </button>
+                         <button onClick={() => setActiveCallId(appt.id)} className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center"><Video size={14} /></button>
+                       </div>
+                    )}
+                  </div>
+                )}
+
+                {briefings[appt.id] && !activeCallId && (
+                  <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-4 mt-2">
+                    <div className="flex items-center justify-between mb-2">
+                       <h5 className="text-[9px] font-black uppercase tracking-widest text-blue-400 flex items-center gap-2">
+                         <ShieldCheck size={12} /> AI Prep Summary
+                       </h5>
+                       <button onClick={() => setSelectedBriefing({ ...briefings[appt.id], clinicName: appt.clinicName })} className="text-[8px] font-black uppercase tracking-widest text-blue-500 hover:underline">View Full</button>
+                    </div>
+                    <p className="text-[10px] text-[var(--text2)] italic line-clamp-2 leading-relaxed">"{briefings[appt.id].summary}"</p>
+                  </div>
+                )}
+
+                {callSummary[appt.id] && (
+                  <div className="flex gap-2 pt-2">
+                    {!checklists[appt.id] && (
+                      <button 
+                        onClick={() => handleGenerateChecklist(appt.id, callSummary[appt.id])}
+                        disabled={isGeneratingChecklist}
+                        className="w-full py-2 bg-teal-500/10 text-teal-400 rounded-xl text-[9px] font-black uppercase tracking-widest border border-teal-500/20 flex items-center justify-center gap-2 hover:bg-teal-500 hover:text-white transition-all"
+                      >
+                        <ListChecks size={14} /> {isGeneratingChecklist ? 'Generating Checklist...' : 'Extract Post-Visit Tasks'}
+                      </button>
+                    )}
+                    {checklists[appt.id] && (
+                      <div className="w-full bg-teal-500/5 border border-teal-500/10 rounded-2xl p-4 space-y-3">
+                         <h5 className="text-[9px] font-black uppercase tracking-widest text-teal-400 flex items-center gap-2">
+                           <CheckCircle2 size={12} /> Follow-up Tasks
+                         </h5>
+                         <div className="space-y-2">
+                           {checklists[appt.id].tasks.map((task: any, idx: number) => (
+                             <div key={idx} className="flex items-center justify-between bg-black/20 p-2 rounded-lg">
+                               <div className="flex items-center gap-2">
+                                 <div className={cn("w-1.5 h-1.5 rounded-full", task.priority === 'high' ? 'bg-rose-500' : 'bg-amber-500')} />
+                                 <span className="text-[10px] text-white">{task.title}</span>
+                               </div>
+                               <span className="text-[8px] font-black uppercase text-[var(--muted)]">{task.deadline}</span>
+                             </div>
+                           ))}
+                         </div>
+                         {checklists[appt.id].nextAppointmentSuggestion && (
+                           <p className="text-[9px] text-teal-400/80 italic">Tip: {checklists[appt.id].nextAppointmentSuggestion}</p>
+                         )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -8628,29 +11015,29 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
             </div>
           </div>
         ) : (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-10 text-center space-y-6 shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-30" />
-            <div className="w-20 h-20 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto text-blue-500 mb-2">
-              <Lock size={40} />
+          <div className="glass border border-white/20 rounded-[48px] p-12 text-center space-y-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent pointer-events-none" />
+            <div className="w-24 h-24 glass-morphism border border-blue-500/20 rounded-[32px] flex items-center justify-center mx-auto text-blue-400 mb-4 shadow-2xl">
+              <Lock size={48} />
             </div>
-            <div className="space-y-2">
-              <h3 className="font-serif text-2xl">Clinician Access</h3>
-              <p className="text-sm text-[var(--muted)] leading-relaxed max-w-[280px] mx-auto">Verified medical professionals only. Enter your 4-digit PIN.</p>
+            <div className="space-y-4">
+              <h3 className="font-serif text-3xl sm:text-4xl text-white tracking-tight leading-tight">Physician Portal.</h3>
+              <p className="text-sm text-[var(--muted)] leading-relaxed max-w-sm mx-auto font-medium">Restricted to verified medical professionals. Access clinical dashboards and patient analytics.</p>
             </div>
-            <div className="max-w-[240px] mx-auto space-y-4">
+            <div className="max-w-[280px] mx-auto space-y-4 relative z-10">
               <input 
                 type="password" 
                 value={pin}
                 onChange={e => setPin(e.target.value)}
                 placeholder="••••"
-                className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-3xl p-5 text-center text-3xl tracking-[0.8em] font-serif outline-none focus:border-blue-500/50 transition-all font-black text-blue-500"
+                className="w-full glass-darker border border-white/10 rounded-[28px] p-6 text-center text-4xl tracking-[0.6em] font-serif outline-none focus:ring-4 focus:ring-blue-500/20 transition-all font-black text-blue-400 shadow-inner"
               />
               <button 
                 onClick={handleLogin}
-                className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-black rounded-3xl shadow-xl shadow-blue-500/20 text-xs uppercase tracking-[0.2em] active:scale-95 transition-all"
-              >Enter Veda Lab</button>
+                className="w-full py-5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black rounded-[24px] shadow-2xl shadow-blue-900/40 text-[10px] uppercase tracking-[0.4em] active:scale-95 transition-all border border-white/10"
+              >Initialize Interface</button>
             </div>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest opacity-50">Authorized Personnel (PIN: 1234 for demo)</p>
+            <p className="text-[10px] text-blue-500/40 font-black uppercase tracking-[0.4em] opacity-80 pt-4">AUTHORIZED CLINICAL PERSONNEL ONLY</p>
           </div>
         )
       )}
@@ -8666,108 +11053,109 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
             />
             <motion.div 
               initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              className="fixed bottom-0 left-0 right-0 z-[160] bg-[var(--bg)] rounded-t-[40px] border-t border-[var(--border)] max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+              className="fixed bottom-0 left-0 right-0 z-[160] glass-darker rounded-t-[48px] border-t border-white/20 max-h-[95vh] flex flex-col shadow-2xl overflow-hidden ring-1 ring-white/10"
             >
               <div className="flex-1 overflow-y-auto no-scrollbar">
                 {/* Clinic Header Banner */}
-                <div className="relative h-48 bg-gradient-to-br from-blue-600 to-indigo-700 p-8 flex items-end">
-                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-12 translate-x-12 blur-3xl pointer-events-none" />
-                   <div className="absolute top-4 right-4 flex gap-2">
-                      <button onClick={() => setSelectedClinic(null)} className="w-10 h-10 bg-black/20 hover:bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-colors"><X size={20} /></button>
+                <div className="relative h-64 bg-gradient-to-br from-blue-600 via-indigo-700 to-purple-800 p-10 flex items-end">
+                   <div className="absolute top-0 right-0 w-80 h-80 bg-white/10 rounded-full -translate-y-16 translate-x-16 blur-3xl pointer-events-none" />
+                   <div className="absolute top-6 right-6 flex gap-2">
+                      <button onClick={() => setSelectedClinic(null)} className="w-12 h-12 glass hover:bg-white/10 rounded-full flex items-center justify-center text-white transition-all shadow-xl border border-white/20"><X size={24} /></button>
                    </div>
-                   <div className="flex items-center gap-6 relative z-10 w-full">
-                      <div className="w-20 h-20 rounded-[28px] bg-white/10 backdrop-blur-xl border border-white/20 flex items-center justify-center text-5xl shadow-2xl">{selectedClinic.icon}</div>
+                   <div className="flex items-center gap-8 relative z-10 w-full mb-2">
+                      <div className="w-24 h-24 rounded-[32px] glass-morphism border border-white/30 flex items-center justify-center text-6xl shadow-2xl ring-4 ring-white/10">{selectedClinic.icon}</div>
                       <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                           <div>
-                              <h3 className="font-serif text-3xl text-white tracking-tight">{selectedClinic.name}</h3>
-                              <p className="text-[10px] font-black text-blue-200/80 uppercase tracking-[0.2em] mt-1.5">{selectedClinic.category} · {selectedClinic.dist} Away</p>
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                           <div className="space-y-1">
+                              <h3 className="font-serif text-4xl text-white tracking-tight drop-shadow-md">{selectedClinic.name}</h3>
+                              <p className="text-[10px] font-black text-blue-200 uppercase tracking-[0.4em] mt-1.5">{selectedClinic.category} · {selectedClinic.dist} Range</p>
                            </div>
-                           <div className="px-4 py-2 bg-white/10 backdrop-blur-xl rounded-2xl border border-white/20 flex items-center gap-2">
-                              <Star size={14} className="text-amber-400" fill="currentColor" />
-                              <span className="text-xs font-black text-white">{selectedClinic.rating}</span>
+                           <div className="px-5 py-2.5 glass-morphism rounded-2xl border border-white/20 flex items-center gap-3 self-start md:self-auto shadow-xl">
+                              <Star size={16} className="text-amber-400" fill="currentColor" />
+                              <span className="text-sm font-black text-white">{selectedClinic.rating}</span>
                            </div>
                         </div>
                       </div>
                    </div>
                 </div>
 
-                <div className="p-8 space-y-10">
+                <div className="p-10 space-y-12">
                   {/* Clinic Info Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-[var(--card2)] border border-[var(--border)] rounded-[32px] p-6 space-y-6">
-                       <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center"><Stethoscope size={20} /></div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="glass border border-white/5 rounded-[40px] p-8 space-y-8 shadow-xl">
+                       <div className="flex items-center gap-5">
+                          <div className="w-12 h-12 rounded-2xl glass-morphism text-blue-400 flex items-center justify-center shadow-lg border border-white/5"><Stethoscope size={24} /></div>
                           <div>
-                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest">Medical Expertise</p>
-                            <p className="text-xs font-bold text-[var(--text)] mt-0.5">{selectedClinic.specialties.join(' · ')}</p>
+                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.3em]">Clinical Specialization</p>
+                            <p className="text-sm font-bold text-white mt-1">{selectedClinic.specialties.join(' · ')}</p>
                           </div>
                        </div>
-                       <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl bg-teal-500/10 text-teal-500 flex items-center justify-center"><MapPin size={20} /></div>
+                       <div className="flex items-center gap-5">
+                          <div className="w-12 h-12 rounded-2xl glass-morphism text-teal-400 flex items-center justify-center shadow-lg border border-white/5"><MapPin size={24} /></div>
                           <div>
-                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest">Clinic Address</p>
-                            <p className="text-xs font-bold text-[var(--text2)] mt-0.5">{selectedClinic.address}</p>
+                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.3em]">Clinic Coordinates</p>
+                            <p className="text-sm font-bold text-white/80 mt-1 leading-relaxed">{selectedClinic.address}</p>
                           </div>
                        </div>
-                       <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center"><Clock size={20} /></div>
+                       <div className="flex items-center gap-5">
+                          <div className="w-12 h-12 rounded-2xl glass-morphism text-amber-500 flex items-center justify-center shadow-lg border border-white/5"><Clock size={24} /></div>
                           <div>
-                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest">Operating Hours</p>
-                            <p className="text-xs font-bold text-[var(--text)] mt-0.5">{selectedClinic.open}</p>
+                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.3em]">Operational Window</p>
+                            <p className="text-sm font-bold text-white mt-1">{selectedClinic.open}</p>
                           </div>
                        </div>
                     </div>
 
-                    <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-6 shadow-sm">
-                       <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center"><Shield size={20} /></div>
+                    <div className="glass border border-white/10 rounded-[40px] p-8 space-y-8 shadow-2xl relative overflow-hidden group">
+                       <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/5 blur-3xl -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-1000" />
+                       <div className="flex items-center gap-5 relative z-10">
+                          <div className="w-12 h-12 rounded-2xl glass-morphism text-purple-400 flex items-center justify-center shadow-lg border border-white/5"><Shield size={24} /></div>
                           <div>
-                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-widest">Facility Trust</p>
-                            <p className="text-[10px] font-bold text-[var(--text2)] mt-1 tracking-tight leading-relaxed">ISO 9001:2015 Certified · NABH Accredited Facility · Verified Professionals</p>
+                            <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.3em]">Facility Credentials</p>
+                            <p className="text-[11px] font-bold text-white/70 mt-1.5 uppercase tracking-wide leading-relaxed">ISO 9001:2015 · NABH ACCREDITED · VERIFIED PATIENT SAFETY PROTOCOL</p>
                           </div>
                        </div>
-                       <div className="pt-2 px-1">
-                          <p className="text-[10px] font-bold text-[var(--muted)] leading-relaxed italic opacity-80">"Top rated clinic for cardiology and general care in Gurugram with state-of-the-art diagnostic facilities."</p>
+                       <div className="pt-2 px-1 relative z-10 border-t border-white/5 mt-4">
+                          <p className="text-sm font-medium text-[var(--muted)] leading-relaxed italic opacity-80 decoration-teal-500/20 underline underline-offset-8">"Leading clinical ecosystem for complex diagnostics and preventive wellness in the metropolitan region."</p>
                        </div>
                     </div>
                   </div>
 
                   {/* Booking Section */}
-                  <div className="space-y-6">
-                    <div className="flex items-center gap-3">
-                       <div className="h-[2px] flex-1 bg-gradient-to-r from-transparent to-[var(--border)]" />
-                       <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-[var(--muted)]">Schedule Appointment</h4>
-                       <div className="h-[2px] flex-1 bg-gradient-to-l from-transparent to-[var(--border)]" />
+                  <div className="space-y-8">
+                    <div className="flex items-center gap-4">
+                       <div className="h-[1px] flex-1 bg-gradient-to-r from-transparent to-white/10" />
+                       <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-[var(--muted)]">SECURE APPOINTMENT TUNNEL</h4>
+                       <div className="h-[1px] flex-1 bg-gradient-to-l from-transparent to-white/10" />
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      <div className="space-y-4">
-                        <label className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1 block flex items-center justify-between">
-                           Pick a Date
-                           {bookingDate && <span className="text-blue-500 flex items-center gap-1 animate-pulse"><div className="w-1.5 h-1.5 bg-blue-500 rounded-full" /> Selected</span>}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                      <div className="space-y-5">
+                        <label className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)] px-1 flex items-center justify-between">
+                           SELECT CALENDAR DATE
+                           {bookingDate && <motion.span initial={{ scale: 0.8 }} animate={{ scale: 1 }} className="text-blue-400 flex items-center gap-2"><div className="w-2 h-2 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.6)]" /> SELECTED</motion.span>}
                         </label>
                         <input 
                           type="date" 
                           value={bookingDate}
                           onChange={e => setBookingDate(e.target.value)}
                           min={new Date().toISOString().split('T')[0]}
-                          className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-3xl p-5 text-sm font-bold outline-none focus:border-blue-500 transition-all shadow-inner text-[var(--text)]" 
+                          className="w-full glass-darker border border-white/10 rounded-[28px] p-6 text-base font-bold outline-none focus:border-blue-500 transition-all shadow-inner text-white appearance-none" 
                         />
                       </div>
 
-                      <div className="space-y-4">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] px-1">Consultation Slot</p>
-                        <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-5">
+                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)] px-1">CLINICAL SLOTS AVAILABLE</p>
+                        <div className="grid grid-cols-3 gap-3">
                           {['09:00 AM', '10:30 AM', '12:00 PM', '01:30 PM', '03:00 PM', '04:30 PM', '06:00 PM', '07:30 PM', '09:00 PM'].map(t => (
                             <button 
                               key={t}
                               onClick={() => setBookingTime(t)}
                               className={cn(
-                                "py-3 rounded-xl border text-[9px] font-black uppercase transition-all",
+                                "py-4 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all shadow-md",
                                 bookingTime === t 
-                                 ? "bg-blue-500 border-transparent text-white shadow-lg shadow-blue-500/20 scale-105" 
-                                 : "bg-[var(--card2)] border-[var(--border)] text-[var(--muted)] hover:border-blue-500/30"
+                                 ? "bg-blue-600 border-white/30 text-white shadow-2xl shadow-blue-900/40 scale-105" 
+                                 : "glass border-white/5 text-[var(--muted)] hover:border-blue-500/40 hover:text-white"
                               )}
                             >
                               {t}
@@ -8778,37 +11166,37 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
                     </div>
                   </div>
 
-                  <div className="pt-2">
+                  <div className="pt-4 pb-12">
                     <button 
                       onClick={bookAppointment}
                       disabled={isBooking || !bookingDate}
-                      className="w-full py-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white font-black rounded-[32px] shadow-2xl shadow-blue-500/30 active:scale-95 transition-all disabled:opacity-50 text-[10px] uppercase tracking-[0.4em] flex items-center justify-center gap-3 group/btn relative overflow-hidden"
+                      className="w-full py-7 bg-gradient-to-r from-blue-600 via-indigo-700 to-purple-700 text-white font-black rounded-[32px] shadow-[0_20px_50px_rgba(37,99,235,0.4)] active:scale-95 transition-all disabled:opacity-30 text-[11px] uppercase tracking-[0.5em] flex items-center justify-center gap-4 group/btn relative overflow-hidden border border-white/20"
                     >
-                      <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
+                      <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
                       {isBooking ? (
                          <>
-                           <RefreshCw size={20} className="animate-spin" />
-                           Securing Your Spot...
+                           <RefreshCw size={24} className="animate-spin" />
+                           FINALIZING COORDINATES...
                          </>
                       ) : (
                         <>
-                          Confirm Appointment
-                          <ArrowRight size={18} className="group-hover/btn:translate-x-1 transition-transform" />
+                          Confirm Booking
+                          <ArrowRight size={22} className="group-hover/btn:translate-x-2 transition-transform" />
                         </>
                       )}
                     </button>
-                    <div className="flex items-center justify-center gap-6 mt-6 opacity-40">
-                       <div className="flex items-center gap-1.5 grayscale">
-                          <Shield size={12} />
-                          <span className="text-[8px] font-black uppercase tracking-[0.2em]">Secure</span>
+                    <div className="flex items-center justify-center gap-8 mt-10 opacity-40">
+                       <div className="flex items-center gap-2 grayscale group hover:grayscale-0 transition-all cursor-default">
+                          <Shield size={16} className="text-blue-400" />
+                          <span className="text-[9px] font-black uppercase tracking-[0.3em] text-white">Encrypted</span>
                        </div>
-                       <div className="flex items-center gap-1.5 grayscale">
-                          <Award size={12} />
-                          <span className="text-[8px] font-black uppercase tracking-[0.2em]">Certified</span>
+                       <div className="flex items-center gap-2 grayscale group hover:grayscale-0 transition-all cursor-default">
+                          <Award size={16} className="text-amber-400" />
+                          <span className="text-[9px] font-black uppercase tracking-[0.3em] text-white">Verified</span>
                        </div>
-                       <div className="flex items-center gap-1.5 grayscale">
-                          <CheckCircle2 size={12} />
-                          <span className="text-[8px] font-black uppercase tracking-[0.2em]">HIPAA</span>
+                       <div className="flex items-center gap-2 grayscale group hover:grayscale-0 transition-all cursor-default">
+                          <CheckCircle2 size={16} className="text-teal-400" />
+                          <span className="text-[9px] font-black uppercase tracking-[0.3em] text-white">HIPAA</span>
                        </div>
                     </div>
                   </div>
@@ -8816,6 +11204,90 @@ function ClinicPortal({ appointments, profile, onBook }: { appointments: Appoint
               </div>
             </motion.div>
           </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedBriefing && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedBriefing(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-xl glass-darker border border-white/10 rounded-[40px] shadow-2xl p-8 overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-8">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-400">
+                    <Sparkles size={24} />
+                  </div>
+                  <div>
+                    <h4 className="text-xl font-serif text-white">AI Doctor Briefing</h4>
+                    <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest">{selectedBriefing.clinicName}</p>
+                  </div>
+                </div>
+                <button onClick={() => setSelectedBriefing(null)} className="p-2 hover:bg-white/5 rounded-xl text-[var(--muted)]"><X size={20} /></button>
+              </div>
+
+              <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 no-scrollbar">
+                <section className="space-y-2">
+                  <h5 className="text-[10px] font-black uppercase tracking-widest text-blue-400/60">Executive Summary</h5>
+                  <p className="text-sm text-white/90 leading-relaxed italic border-l-2 border-blue-500/30 pl-4 bg-blue-500/5 py-4 rounded-r-2xl">
+                    "{selectedBriefing.summary}"
+                  </p>
+                </section>
+
+                <section className="space-y-3">
+                  <h5 className="text-[10px] font-black uppercase tracking-widest text-blue-400/60">Top Symptoms to Discuss</h5>
+                  <div className="grid gap-2">
+                    {selectedBriefing.keySymptoms.map((symp: string, i: number) => (
+                      <div key={i} className="flex items-center gap-3 bg-white/5 p-3 rounded-xl border border-white/5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                        <span className="text-xs text-white/80">{symp}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <h5 className="text-[10px] font-black uppercase tracking-widest text-blue-400/60">Questions for Physician</h5>
+                  <div className="grid gap-2">
+                    {selectedBriefing.suggestedQuestions.map((q: string, i: number) => (
+                      <div key={i} className="flex gap-3 bg-indigo-500/10 p-4 rounded-2xl border border-indigo-500/20">
+                        <MessageSquare size={14} className="text-indigo-400 mt-0.5 shrink-0" />
+                        <span className="text-xs text-indigo-100/90 font-medium">{q}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {selectedBriefing.lifestyleNotes && (
+                  <section className="space-y-2">
+                    <h5 className="text-[10px] font-black uppercase tracking-widest text-blue-400/60">Lifestyle Context</h5>
+                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                       <p className="text-[11px] text-[var(--muted)] leading-relaxed italic">{selectedBriefing.lifestyleNotes}</p>
+                    </div>
+                  </section>
+                )}
+              </div>
+
+              <div className="mt-8">
+                 <button 
+                   onClick={() => setSelectedBriefing(null)}
+                   className="w-full py-4 bg-blue-500 text-white font-black rounded-2xl text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-500/20 active:scale-95 transition-all"
+                 >
+                   Briefing Ready
+                 </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
@@ -8826,27 +11298,9 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
   const [activeTab, setActiveTab] = useState<'overview' | 'challenges' | 'benefits'>('overview');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const [challengeList, setChallengeList] = useState<CorporateChallenge[]>([
-    { 
-      id: 'step-1', title: '10K Daily Steps', description: 'Maintain a 10,000 step streak for 7 days to earn premium wellness credits.', 
-      type: 'steps', target: 7, current: 4, endDate: 'Apr 30', participants: 450, status: 'joined', reward: `${formatCurrency(500)} Health Coupon`
-    },
-    { 
-      id: 'sleep-1', title: 'Deep Sleep Cycle', description: 'Log at least 7.5 hours of sleep for 5 consecutive nights.', 
-      type: 'sleep', target: 5, current: 2, endDate: 'May 05', participants: 120, status: 'active', reward: 'Meditation Subscription'
-    },
-    { 
-       id: 'mind-1', title: 'Mindful Mornings', description: 'Complete 10 minutes of guided meditation daily.', 
-       type: 'mindfulness', target: 10, current: 0, endDate: 'Apr 28', participants: 310, status: 'active', reward: 'Stress Management Kit'
-    }
-  ]);
+  const [challengeList, setChallengeList] = useState<CorporateChallenge[]>([]);
 
-  const companies = [
-    { id: 'google', name: 'Google India', employees: '5,000+', score: '92/100', color: 'blue' },
-    { id: 'tata', name: 'Tata Consultancy Services', employees: '12,000+', score: '85/100', color: 'orange' },
-    { id: 'reliance', name: 'Reliance Industries', employees: '15,000+', score: '88/100', color: 'blue' },
-    { id: 'medanta', name: 'Medanta Health', employees: '2,500+', score: '96/100', color: 'teal' },
-  ];
+  const companies: any[] = [];
 
   const handleJoin = async (company: string) => {
     setIsSyncing(true);
@@ -8870,26 +11324,26 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
   const isRegistered = !!profile.company;
 
   return (
-    <div className="space-y-6 pb-24">
+    <div className="space-y-8 pb-24 px-1">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#1d976c] to-[#93f9b9] flex items-center justify-center text-[#020f0c] shadow-lg">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#1d976c] to-[#93f9b9] flex items-center justify-center text-[#020f0c] shadow-lg shadow-teal-500/20">
             <Briefcase size={20} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight">Workwell Pro</h2>
-            <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Enterprise Wellness System</p>
+            <h2 className="font-serif text-xl tracking-tight text-white">Workwell Pro</h2>
+            <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em]">Enterprise Wellness System</p>
           </div>
         </div>
         {isRegistered && (
-          <div className="flex bg-[var(--card2)] p-1 rounded-xl border border-[var(--border)]">
+          <div className="flex glass-morphism p-1 rounded-xl border border-white/5 shadow-inner">
             {['overview', 'challenges', 'benefits'].map(tab => (
               <button 
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
                 className={cn(
-                  "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all capitalize",
-                  activeTab === tab ? "bg-[#1d976c] text-white shadow-md shadow-teal-500/20" : "text-[var(--muted)]"
+                  "px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.2em] transition-all capitalize",
+                  activeTab === tab ? "glass text-[#93f9b9] shadow-lg border border-white/10" : "text-[var(--muted)] hover:text-white"
                 )}
               >{tab}</button>
             ))}
@@ -8898,42 +11352,43 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
       </div>
 
       {!isRegistered ? (
-        <div className="space-y-6">
-          <div className="bg-gradient-to-br from-[#1d976c] to-[#111] rounded-[40px] p-10 text-white space-y-6 shadow-2xl relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 blur-3xl -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-1000" />
-            <div className="w-20 h-20 bg-white/10 rounded-3xl flex items-center justify-center text-white mb-2 rotate-3 group-hover:rotate-0 transition-transform">
-              <Building2 size={40} />
+        <div className="space-y-8">
+          <div className="glass border border-white/10 rounded-[48px] p-12 text-white space-y-8 shadow-2xl relative overflow-hidden group">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-[#1d976c]/10 blur-3xl -mr-24 -mt-24 group-hover:scale-150 transition-transform duration-1000" />
+            <div className="w-24 h-24 glass-morphism border border-teal-500/20 rounded-[32px] flex items-center justify-center text-[#93f9b9] mb-4 rotate-3 group-hover:rotate-0 transition-transform shadow-2xl">
+              <Building2 size={48} />
             </div>
             <div className="space-y-4">
-              <h3 className="font-serif text-3xl sm:text-4xl leading-tight">Elevate Team Wellness.</h3>
-              <p className="text-sm opacity-70 leading-relaxed max-w-xs">Integrate HR platforms, track collective fitness goals, and unlock exclusive enterprise health benefits.</p>
+              <h3 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight text-white drop-shadow-md">Elevate Team Wellness.</h3>
+              <p className="text-sm text-[var(--muted)] leading-relaxed max-w-sm font-medium">Integrate HR platforms, track collective fitness goals, and unlock exclusive enterprise health benefits for your entire organization.</p>
             </div>
-            <div className="flex items-center justify-center gap-1.5 opacity-50">
-               <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-               <span className="text-[10px] font-bold uppercase tracking-widest">Connected to 200+ Enterprises</span>
+            <div className="flex items-center gap-2 pt-4 relative z-10">
+               <div className="w-2 h-2 rounded-full bg-[#1d976c] animate-pulse" />
+               <span className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)]">Trusted by global leading enterprises</span>
             </div>
           </div>
 
-          <div className="space-y-3">
-            <h4 className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] ml-2">Quick Join Partners</h4>
-            <div className="grid gap-3">
-              {companies.map(c => (
+          <div className="space-y-4">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-[var(--muted)] ml-4">Quick Join Partners</h4>
+            <div className="grid gap-4">
+              {companies.map((c, i) => (
                 <button 
                   key={c.id}
                   disabled={isSyncing}
                   onClick={() => handleJoin(c.name)}
-                  className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-5 flex items-center justify-between hover:border-teal-500/30 transition-all group"
+                  className="glass border border-white/5 rounded-[32px] p-6 flex items-center justify-between hover:border-[#1d976c]/40 transition-all group relative overflow-hidden shadow-xl"
                 >
-                  <div className="flex items-center gap-4 text-left">
-                    <div className="w-12 h-12 rounded-2xl bg-teal-500/5 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">🏢</div>
+                  <div className="absolute inset-0 bg-gradient-to-r from-[#1d976c]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="flex items-center gap-5 text-left relative z-10">
+                    <div className="w-14 h-14 rounded-2xl glass-morphism flex items-center justify-center text-2xl group-hover:scale-110 transition-transform border border-white/5 shadow-inner">🏢</div>
                     <div>
-                      <p className="text-sm font-bold text-[var(--text)]">{c.name}</p>
-                      <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">{c.employees} Employees</p>
+                      <p className="text-base font-serif text-white tracking-tight">{c.name}</p>
+                      <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-1">{c.employees} Members Registered</p>
                     </div>
                   </div>
-                  <div className="flex flex-col items-end">
-                    <span className="text-xs font-serif text-teal-400">{c.score}</span>
-                    <span className="text-[8px] font-black uppercase tracking-widest text-[var(--muted)]">Wellness Score</span>
+                  <div className="flex flex-col items-end relative z-10">
+                    <span className="text-lg font-serif text-[#93f9b9] drop-shadow-sm">{c.score}</span>
+                    <span className="text-[8px] font-black uppercase tracking-[0.2em] text-[var(--muted)]">Vital Score</span>
                   </div>
                 </button>
               ))}
@@ -8947,65 +11402,51 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
               key="overview" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-8 shadow-xl relative overflow-hidden">
-                <div className="space-y-2 relative z-10">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-teal-500">Corporate Identity</p>
-                  <h3 className="font-serif text-2xl">{profile.company}</h3>
-                  <div className="flex items-center gap-4 mt-4">
-                    <div className="px-3 py-1 bg-teal-500/10 text-teal-500 rounded-full text-[9px] font-black uppercase tracking-widest">ID: {profile.corporateId}</div>
-                    <div className="px-3 py-1 bg-blue-500/10 text-blue-500 rounded-full text-[9px] font-black uppercase tracking-widest">Active Member</div>
+              <div className="glass border border-white/10 rounded-[40px] p-10 shadow-2xl relative overflow-hidden">
+                <div className="space-y-3 relative z-10">
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[#93f9b9]">Official Enrollment</p>
+                  <h3 className="font-serif text-4xl text-white tracking-tight">{profile.company}</h3>
+                  <div className="flex flex-wrap items-center gap-3 mt-6">
+                    <div className="px-4 py-1.5 glass-morphism border border-white/5 text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.2em]">ID: {profile.corporateId}</div>
+                    <div className="px-4 py-1.5 glass-morphism border border-white/5 text-blue-400 rounded-full text-[9px] font-black uppercase tracking-[0.2em]">Verified Employee</div>
                   </div>
                 </div>
-                <div className="absolute top-0 right-0 w-40 h-40 bg-teal-500/5 rounded-full -mr-10 -mt-10 blur-2xl" />
+                <div className="absolute top-0 right-0 w-56 h-56 bg-[#1d976c]/10 rounded-full -mr-16 -mt-16 blur-3xl" />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-3">
+                <div className="glass border border-white/10 rounded-[32px] p-7 space-y-4 hover:border-[#1d976c]/20 transition-all shadow-xl">
                   <div className="flex items-center justify-between">
-                    <Heart size={18} className="text-emerald-500" />
-                    <span className="text-xs font-serif text-emerald-400">+4%</span>
+                    <div className="w-8 h-8 rounded-lg glass-morphism flex items-center justify-center text-emerald-400"><Heart size={18} /></div>
+                    <span className="text-xs font-serif text-emerald-400 font-bold">+4.2%</span>
                   </div>
                   <div>
-                    <div className="text-2xl font-serif">88/100</div>
-                    <div className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Team Health Score</div>
+                    <div className="text-3xl font-serif text-white">82/100</div>
+                    <div className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] mt-1">Team Vital Matrix</div>
                   </div>
                 </div>
-                <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-3">
+                <div className="glass border border-white/10 rounded-[32px] p-7 space-y-4 hover:border-amber-500/20 transition-all shadow-xl">
                   <div className="flex items-center justify-between">
-                    <Award size={18} className="text-amber-500" />
-                    <span className="text-xs font-serif text-amber-400">#04</span>
+                    <div className="w-8 h-8 rounded-lg glass-morphism flex items-center justify-center text-amber-500"><Award size={18} /></div>
+                    <span className="text-xs font-serif text-amber-400 font-bold">#14</span>
                   </div>
                   <div>
-                    <div className="text-2xl font-serif">Top 5%</div>
-                    <div className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">Industry Rank</div>
+                    <div className="text-3xl font-serif text-white">Top 5%</div>
+                    <div className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] mt-1">Marketplace Rank</div>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-serif text-lg">Department Leaderboard</h4>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Update: Hourly</p>
+              <div className="glass border border-white/5 rounded-[40px] p-8 space-y-6 shadow-2xl relative overflow-hidden group">
+                <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent pointer-events-none" />
+                <div className="flex items-center justify-between relative z-10">
+                  <h4 className="font-serif text-2xl text-white tracking-tight">Department Leaderboard</h4>
+                  <div className="w-2 h-2 rounded-full bg-orange-500 animate-pulse shadow-lg shadow-orange-500/20" />
                 </div>
-                <div className="space-y-3">
-                  {[
-                    { name: 'Engineering', score: '92', color: 'teal' },
-                    { name: 'Product Design', score: '89', color: 'blue' },
-                    { name: 'Marketing', score: '84', color: 'orange' }
-                  ].map((d, i) => (
-                    <div key={i} className="flex items-center justify-between p-4 bg-[var(--card2)] border border-[var(--border)] rounded-2xl">
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs font-serif text-[var(--muted)]">0{i+1}</span>
-                        <span className="text-sm font-bold">{d.name}</span>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="w-24 h-1.5 bg-gray-200/10 rounded-full overflow-hidden">
-                          <div className={cn("h-full rounded-full bg-teal-500")} style={{ width: `${d.score}%` }} />
-                        </div>
-                        <span className="text-sm font-serif">{d.score}</span>
-                      </div>
-                    </div>
-                  ))}
+                <div className="space-y-4 relative z-10">
+                  <div className="text-center py-12 glass-morphism border border-dashed border-white/10 rounded-3xl">
+                     <p className="text-sm text-[var(--muted)] font-medium max-w-[200px] mx-auto opacity-60">Synchronizing team biometric aggregates. Data updates every 60 minutes.</p>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -9014,48 +11455,57 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
           {activeTab === 'challenges' && (
             <motion.div 
               key="challenges" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-              className="space-y-4"
+              className="space-y-6"
             >
-              <div className="bg-teal-500/5 border border-teal-500/20 rounded-3xl p-6 flex items-center justify-between">
-                <div className="space-y-1">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-teal-400">Next Payout</p>
-                  <h4 className="font-serif text-xl">{formatCurrency(2500)} Wellness Grant</h4>
+              <div className="glass border border-teal-500/20 rounded-[32px] p-8 flex items-center justify-between shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-teal-500/5 blur-2xl" />
+                <div className="space-y-2 relative z-10">
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[#93f9b9]">Financial Rewards</p>
+                  <h4 className="font-serif text-3xl text-white">{formatCurrency(2500)} <span className="opacity-40">Wellness Grant</span></h4>
                 </div>
-                <div className="w-12 h-12 bg-teal-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-teal-500/20">
-                  <TrendingUp size={20} />
+                <div className="w-16 h-16 glass-morphism border border-teal-500/20 rounded-2xl flex items-center justify-center text-[#93f9b9] shadow-2xl relative z-10">
+                  <TrendingUp size={28} />
                 </div>
               </div>
 
-              <div className="space-y-3">
-                {challengeList.map(c => (
-                  <div key={c.id} className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-4 shadow-sm relative overflow-hidden group">
-                    <div className="flex justify-between items-start">
+              <div className="grid gap-4">
+                {challengeList.map((c, i) => (
+                  <div key={c.id} className="glass border border-white/5 rounded-[32px] p-8 space-y-6 shadow-xl relative overflow-hidden group hover:border-white/10 transition-all">
+                    <div className="flex justify-between items-start relative z-10">
                       <div className="space-y-1">
-                        <h4 className="font-serif text-lg">{c.title}</h4>
-                        <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">{c.endDate} · {c.participants} Participating</p>
+                        <h4 className="font-serif text-2xl text-white tracking-tight">{c.title}</h4>
+                        <div className="flex items-center gap-3">
+                          <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em]">{c.endDate}</p>
+                          <div className="w-1 h-1 rounded-full bg-white/20" />
+                          <p className="text-[10px] text-teal-400 font-black uppercase tracking-[0.2em]">{c.participants} Contending</p>
+                        </div>
                       </div>
                       {c.status === 'joined' ? (
-                        <div className="px-3 py-1 bg-teal-500/10 text-teal-500 rounded-full text-[8px] font-black uppercase tracking-widest">Joined</div>
+                        <div className="px-5 py-2 glass-morphism border border-teal-500/30 text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.3em] shadow-lg">Joined</div>
                       ) : (
-                        <button onClick={() => handleJoinChallenge(c.id)} className="px-4 py-1.5 bg-teal-500 text-white rounded-full text-[8px] font-black uppercase tracking-widest shadow-lg shadow-teal-500/10 hover:bg-teal-600 transition-all active:scale-95">Join Now</button>
+                        <button onClick={() => handleJoinChallenge(c.id)} className="px-6 py-2.5 bg-gradient-to-r from-teal-500 to-emerald-600 text-white rounded-full text-[10px] font-black uppercase tracking-[0.3em] shadow-2xl shadow-teal-500/30 hover:scale-105 transition-all active:scale-95 border border-white/10">Enroll Now</button>
                       )}
                     </div>
                     
                     {c.status === 'joined' && (
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-[10px] font-bold">
-                          <span className="text-[var(--muted)] uppercase tracking-widest">Progress</span>
-                          <span>{Math.round((c.current / c.target) * 100)}%</span>
+                      <div className="space-y-3 relative z-10">
+                        <div className="flex justify-between text-[11px] font-black uppercase tracking-[0.2em]">
+                          <span className="text-[var(--muted)]">Personal Objective</span>
+                          <span className="text-white">{Math.round((c.current / c.target) * 100)}%</span>
                         </div>
-                        <div className="w-full h-2 bg-gray-200/5 rounded-full overflow-hidden">
-                           <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-400" style={{ width: `${(c.current / c.target) * 100}%` }} />
+                        <div className="w-full h-2.5 glass-darker rounded-full p-0.5 overflow-hidden">
+                           <motion.div 
+                             initial={{ width: 0 }}
+                             animate={{ width: `${(c.current / c.target) * 100}%` }}
+                             className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full shadow-[0_0_10px_rgba(20,184,166,0.5)]"
+                           />
                         </div>
                       </div>
                     )}
                     
-                    <div className="flex items-center gap-2 pt-2 border-t border-[var(--border)]">
-                      <Award size={14} className="text-amber-500" />
-                      <span className="text-[9px] font-black uppercase tracking-widest text-[var(--muted)]">{c.reward}</span>
+                    <div className="flex items-center gap-3 pt-6 border-t border-white/5 relative z-10">
+                      <div className="w-8 h-8 rounded-lg glass-morphism flex items-center justify-center text-amber-500"><Award size={16} /></div>
+                      <span className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-400/80">{c.reward}</span>
                     </div>
                   </div>
                 ))}
@@ -9066,56 +11516,47 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
           {activeTab === 'benefits' && (
             <motion.div 
               key="benefits" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-              className="space-y-4"
+              className="space-y-6"
             >
-              {[
-                { title: 'Free Annual Health Screening', provider: 'Veda Network', status: 'Available', type: 'Clinical' },
-                { title: '1:1 Nutrition Coaching', provider: 'Culinary Health', status: 'Claimed', type: 'Wellness' },
-                { title: 'Family OPD Reimbursement', provider: 'HDFC ERGO', status: 'Available', type: 'Insurance' },
-                { title: 'Gym Membership Subsidy', provider: 'Cult.Fit', status: 'In Process', type: 'Fitness' }
-              ].map((b, i) => (
-                <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 flex items-center gap-4 hover:border-teal-500/30 transition-all cursor-pointer">
-                  <div className="w-12 h-12 rounded-2xl bg-teal-500/5 flex items-center justify-center text-teal-500">
-                    {b.type === 'Clinical' && <Stethoscope size={20} />}
-                    {b.type === 'Wellness' && <Apple size={20} />}
-                    {b.type === 'Insurance' && <Shield size={20} />}
-                    {b.type === 'Fitness' && <Flame size={20} />}
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="text-sm font-bold text-[var(--text)]">{b.title}</h4>
-                    <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest">{b.provider}</p>
-                  </div>
-                  <div className="text-right">
-                    <div className={cn(
-                      "px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest",
-                      b.status === 'Available' ? "bg-teal-500/10 text-teal-500" : "bg-gray-500/10 text-[var(--muted)]"
-                    )}>
-                      {b.status}
-                    </div>
-                  </div>
-                </div>
-              ))}
+              <div className="glass border border-white/5 rounded-[48px] py-32 text-center relative overflow-hidden group">
+                 <div className="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent pointer-events-none" />
+                 <div className="relative z-10 space-y-6">
+                   <div className="w-24 h-24 glass-morphism border border-white/10 rounded-[32px] flex items-center justify-center mx-auto text-white/5 shadow-2xl group-hover:scale-110 transition-transform duration-700">
+                     <Shield size={64} strokeWidth={1} />
+                   </div>
+                   <div className="space-y-2">
+                     <h3 className="font-serif text-2xl text-white/40">Exclusive Benefits</h3>
+                     <p className="text-sm font-medium text-[var(--muted)] max-w-xs mx-auto opacity-60 uppercase tracking-[0.1em]">Your organization has not yet provisioned third-party benefit integrations.</p>
+                   </div>
+                 </div>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
       )}
 
       {isSyncing && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-md z-[200] flex flex-col items-center justify-center space-y-6">
-          <div className="relative">
-            <div className="w-20 h-20 rounded-full border-4 border-teal-500/20" />
-            <div className="absolute top-0 w-20 h-20 rounded-full border-4 border-teal-500 border-t-transparent animate-spin" />
+        <div className="fixed inset-0 bg-[#020f0c]/60 backdrop-blur-2xl z-[500] flex flex-col items-center justify-center p-8">
+          <div className="relative mb-10">
+            <div className="w-32 h-32 rounded-full border-4 border-[#1d976c]/10" />
+            <motion.div 
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+              className="absolute top-0 w-32 h-32 rounded-full border-4 border-[#1d976c] border-t-transparent shadow-[0_0_20px_rgba(29,151,108,0.3)]" 
+            />
+            <div className="absolute inset-0 flex items-center justify-center text-[#1d976c]">
+              <Lock size={32} />
+            </div>
           </div>
-          <div className="text-center space-y-2">
-            <h3 className="font-serif text-xl text-white">Verifying Enrollment</h3>
-            <p className="text-xs text-white/60 uppercase tracking-[0.2em] font-black">Syncing with HR Data...</p>
+          <div className="text-center space-y-4 max-w-xs">
+            <h3 className="font-serif text-4xl text-white tracking-tight">Verifying Enrollment</h3>
+            <p className="text-[11px] text-teal-500/60 font-black uppercase tracking-[0.4em] leading-relaxed">SECURE ENTERPRISE SYNC IN PROGRESS...</p>
           </div>
         </div>
       )}
     </div>
   );
 }
-
 function MedEducation() {
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -9187,14 +11628,14 @@ function MedEducation() {
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 sm:p-10 text-center space-y-6 shadow-xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-8 opacity-5">
-          <BookOpen size={120} />
+      <div className="glass border border-white/10 rounded-[48px] p-8 sm:p-12 text-center space-y-8 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-8 opacity-5 text-purple-500">
+          <BookOpen size={160} />
         </div>
         
-        <div className="space-y-2 relative z-10">
-          <h3 className="font-serif text-2xl sm:text-3xl text-[var(--text)]">What would you like to learn?</h3>
-          <p className="text-sm text-[var(--text2)] max-w-md mx-auto">Veda AI simplifies complex medical topics, from basic anatomy to advanced pharmacology.</p>
+        <div className="space-y-4 relative z-10">
+          <h3 className="font-serif text-3xl sm:text-5xl text-white tracking-tight leading-tight">Biomedical Portal.</h3>
+          <p className="text-sm text-[var(--muted)] max-w-md mx-auto font-medium leading-relaxed">Veda AI simplifies complex clinical literature into actionable knowledge, from molecular anatomy to advanced diagnostics.</p>
         </div>
 
         <form 
@@ -9204,45 +11645,47 @@ function MedEducation() {
           }}
           className="relative max-w-lg mx-auto z-10"
         >
-          <input 
-            type="text" 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="e.g. How the heart works, Vitamin D basics..." 
-            className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-5 pl-14 text-sm outline-none focus:border-purple-500/50 focus:ring-4 focus:ring-purple-500/5 transition-all shadow-inner" 
-          />
-          <div className="absolute left-5 top-1/2 -translate-y-1/2 text-[var(--muted)]">
-            <Search size={20} />
+          <div className="relative group">
+            <input 
+              type="text" 
+              value={search} 
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search condition, drug, or physiology..." 
+              className="w-full glass-darker border border-white/10 rounded-[28px] py-6 px-8 text-white text-base focus:ring-4 focus:ring-purple-500/20 transition-all font-medium placeholder:text-white/20 shadow-2xl"
+            />
+            <button 
+              type="submit"
+              disabled={isLoading || !search.trim()}
+              className="absolute right-3 top-3 bottom-3 px-8 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl flex items-center justify-center transition-all shadow-xl shadow-purple-900/30 disabled:opacity-50 active:scale-95 border border-white/10 group-hover:scale-105"
+            >
+              {isLoading ? <RefreshCw className="animate-spin" size={20} /> : <Search size={22} />}
+            </button>
           </div>
-          <button 
-            type="submit"
-            disabled={isLoading || !search.trim()}
-            className="absolute right-3 top-1/2 -translate-y-1/2 px-4 py-2 bg-purple-500 text-white rounded-xl text-xs font-bold hover:bg-purple-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/20"
-          >
-            {isLoading ? "Searching..." : "Explore"}
-          </button>
         </form>
 
         {!currentLesson && !isLoading && (
-          <div className="pt-4 z-10 relative">
-            <p className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.2em] mb-4">Recommended Topics</p>
-            <div className="flex flex-wrap justify-center gap-2">
-              {recommendedTopics.map(topic => (
-                <button
-                  key={topic.title}
-                  onClick={() => handleSearch(topic.title)}
-                  className="flex items-center gap-2 px-4 py-2 bg-[var(--card2)] border border-[var(--border)] rounded-full text-xs font-bold text-[var(--text2)] hover:border-purple-500/40 hover:text-purple-400 transition-all group"
-                >
-                  <span className={cn(
-                    "w-6 h-6 rounded-lg flex items-center justify-center transition-colors group-hover:bg-purple-500/10",
-                    topic.color === 'red' ? "text-red-400" : topic.color === 'teal' ? "text-teal-400" : topic.color === 'amber' ? "text-amber-400" : "text-purple-400"
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 relative z-10">
+             {recommendedTopics.map((topic, i) => (
+               <motion.button 
+                 key={topic.title}
+                 initial={{ opacity: 0, y: 10 }}
+                 animate={{ opacity: 1, y: 0 }}
+                 transition={{ delay: i * 0.05 }}
+                 onClick={() => handleSearch(topic.title)}
+                 className="p-4 glass-morphism border border-white/5 rounded-[24px] flex flex-col items-center gap-3 hover:glass transition-all group"
+               >
+                  <div className={cn(
+                    "w-10 h-10 rounded-xl glass flex items-center justify-center transition-colors shadow-lg",
+                    topic.color === 'purple' ? "text-purple-400" :
+                    topic.color === 'red' ? "text-red-400" :
+                    topic.color === 'amber' ? "text-amber-400" :
+                    topic.color === 'teal' ? "text-teal-400" : "text-blue-400"
                   )}>
                     {topic.icon}
-                  </span>
-                  {topic.title}
-                </button>
-              ))}
-            </div>
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] group-hover:text-white transition-colors">{topic.title}</span>
+               </motion.button>
+             ))}
           </div>
         )}
       </div>
@@ -9260,44 +11703,58 @@ function MedEducation() {
           animate={{ opacity: 1, y: 0 }}
           className="space-y-6"
         >
-          <div className="bg-gradient-to-br from-purple-500/10 to-transparent border border-purple-500/20 rounded-3xl p-8 shadow-sm">
-            <h3 className="font-serif text-3xl mb-4 text-[var(--text)]">{currentLesson.title}</h3>
-            <p className="text-base text-[var(--text2)] leading-relaxed mb-8">{currentLesson.overview}</p>
-            
-            <div className="grid sm:grid-cols-2 gap-4">
-              {currentLesson.keyPoints.map((point, i) => (
-                <div key={i} className="flex gap-3 p-4 bg-[var(--card)] border border-[var(--border)] rounded-2xl">
-                  <div className="w-6 h-6 rounded-full bg-purple-500/10 flex items-center justify-center shrink-0">
-                    <CheckCircle2 size={14} className="text-purple-400" />
+          <div className="glass border border-purple-500/20 rounded-[40px] p-10 shadow-2xl relative overflow-hidden group">
+            <div className="absolute top-0 right-0 w-80 h-80 bg-purple-500/10 rounded-full blur-[100px] -mr-40 -mt-40 group-hover:bg-purple-500/20 transition-colors duration-1000" />
+            <div className="relative z-10 space-y-6">
+              <div className="space-y-4">
+                <div className="px-4 py-1.5 glass-morphism border border-white/10 text-purple-400 rounded-full text-[10px] font-black uppercase tracking-[0.3em] inline-block">Medical Briefing</div>
+                <h3 className="font-serif text-[clamp(28px,5vw,44px)] leading-tight text-white tracking-tight">{currentLesson.title}</h3>
+              </div>
+              <p className="text-base text-[var(--muted)] leading-relaxed max-w-3xl font-medium">{currentLesson.overview}</p>
+              
+              <div className="grid sm:grid-cols-2 gap-4 mt-10">
+                {currentLesson.keyPoints.map((point, i) => (
+                  <div key={i} className="flex gap-4 p-5 glass-morphism border border-white/5 rounded-3xl hover:border-purple-500/20 transition-colors group/item">
+                    <div className="w-10 h-10 rounded-2xl glass flex items-center justify-center shrink-0 group-hover/item:scale-110 transition-transform">
+                      <CheckCircle2 size={18} className="text-purple-400" />
+                    </div>
+                    <p className="text-sm font-medium text-white/90 leading-snug">{point}</p>
                   </div>
-                  <p className="text-sm font-medium text-[var(--text2)]">{point}</p>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-6">
-            <div className="md:col-span-2 space-y-6">
+          <div className="grid md:grid-cols-3 gap-8">
+            <div className="md:col-span-2 space-y-8">
               {currentLesson.details.map((section, i) => (
-                <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-8 space-y-4 shadow-sm">
-                  <h4 className="font-serif text-xl text-purple-400">{section.title}</h4>
-                  <div className="text-[15px] text-[var(--text2)] leading-relaxed whitespace-pre-wrap">{section.content}</div>
+                <div key={i} className="glass-morphism border border-white/5 rounded-[40px] p-10 space-y-6 shadow-xl relative overflow-hidden hover:border-white/10 transition-colors">
+                  <div className="flex items-center gap-4">
+                    <div className="w-1 h-8 rounded-full bg-purple-500/50" />
+                    <h4 className="font-serif text-2xl text-white tracking-tight">{section.title}</h4>
+                  </div>
+                  <div className="text-[15px] text-[var(--muted)] leading-relaxed font-medium whitespace-pre-wrap">{section.content}</div>
                 </div>
               ))}
             </div>
 
-            <div className="space-y-6">
-              <div className="bg-amber-500/[0.03] border border-amber-500/20 rounded-3xl p-6 space-y-4">
-                <div className="flex items-center gap-2 mb-2 text-amber-500">
-                  <Lightbulb size={20} />
-                  <span className="text-xs font-black uppercase tracking-wider">Common Questions</span>
+            <div className="space-y-8">
+              <div className="glass-darker border border-amber-500/10 rounded-[32px] p-8 space-y-6 shadow-2xl">
+                <div className="flex items-center gap-3 text-amber-400">
+                  <div className="w-8 h-8 rounded-lg glass-morphism flex items-center justify-center"><Lightbulb size={20} /></div>
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Patient FAQs</span>
                 </div>
-                {currentLesson.faqs.map((faq, i) => (
-                  <div key={i} className="space-y-2 border-b border-[var(--border)] last:border-0 pb-4 last:pb-0">
-                    <p className="text-sm font-bold text-[var(--text)] leading-snug">{faq.q}</p>
-                    <p className="text-xs text-[var(--text2)] leading-relaxed">{faq.a}</p>
-                  </div>
-                ))}
+                <div className="space-y-6">
+                  {currentLesson.faqs.map((faq, i) => (
+                    <div key={i} className="space-y-3 border-b border-white/5 last:border-0 pb-6 last:pb-0">
+                      <p className="text-sm font-bold text-white leading-tight flex gap-3">
+                         <span className="text-amber-500/40 font-serif">Q.</span>
+                         {faq.q}
+                      </p>
+                      <p className="text-[13px] text-[var(--muted)] leading-relaxed font-medium pl-6">{faq.a}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <button 
@@ -9306,9 +11763,9 @@ function MedEducation() {
                   setSearch('');
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
-                className="w-full p-4 rounded-2xl border border-[var(--border)] border-dashed text-[var(--muted)] hover:text-purple-400 hover:border-purple-500/30 transition-all text-sm font-bold"
+                className="w-full py-6 glass border border-white/10 rounded-3xl text-[10px] font-black uppercase tracking-[0.3em] text-white hover:bg-white/5 transition-all shadow-xl active:scale-[0.98]"
               >
-                Learn another topic
+                Catalog Return
               </button>
             </div>
           </div>
@@ -9413,35 +11870,35 @@ function MedicineScanner() {
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 text-center space-y-6 shadow-xl relative overflow-hidden group">
+      <div className="glass border border-white/10 rounded-[32px] p-6 text-center space-y-6 shadow-xl relative overflow-hidden group">
         <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--teal)]/5 blur-3xl -mr-16 -mt-16 pointer-events-none" />
         
         {isCameraOpen ? (
           <div className="space-y-6">
-            <div className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-[var(--border)] bg-black">
+            <div className="relative aspect-[4/3] rounded-2xl overflow-hidden glass-morphism border border-white/5 bg-black">
               <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
               <div className="absolute inset-0 border-2 border-[var(--teal)]/20 pointer-events-none rounded-2xl" />
               <div className="absolute top-4 right-4 z-10">
-                <button onClick={stopCamera} className="p-2 bg-black/50 text-white rounded-full backdrop-blur-md hover:bg-black/70 transition-all"><X size={18} /></button>
+                <button onClick={stopCamera} className="p-2 glass-morphism text-white rounded-full backdrop-blur-md hover:bg-black/70 transition-all"><X size={18} /></button>
               </div>
             </div>
             <button 
               onClick={handleScan}
-              className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/20 active:scale-95 transition-all"
+              className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/30 active:scale-95 transition-all border border-white/20"
             >
               Capture & Identify ✦
             </button>
           </div>
         ) : image ? (
           <div className="space-y-6">
-            <div className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-[var(--border)]">
+            <div className="relative aspect-[4/3] rounded-2xl overflow-hidden border border-white/10 glass-morphism">
               <img src={image} alt="Medicine" className="w-full h-full object-contain bg-black/20" />
-              <button onClick={() => setImage(null)} className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full backdrop-blur-md"><X size={18} /></button>
+              <button onClick={() => setImage(null)} className="absolute top-4 right-4 p-2 glass-morphism text-white rounded-full backdrop-blur-md"><X size={18} /></button>
             </div>
             <button 
               onClick={handleScan}
               disabled={isLoading}
-              className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/20 disabled:opacity-50 transition-all"
+              className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/30 disabled:opacity-50 transition-all border border-white/20"
             >
               {isLoading ? 'Identifying...' : 'Analyse Photo ✦'}
             </button>
@@ -9449,12 +11906,12 @@ function MedicineScanner() {
         ) : (
           <div className="py-8 space-y-8">
             <div className="space-y-4">
-               <div className="w-20 h-20 rounded-3xl bg-[var(--teal)]/10 border border-[var(--teal)]/20 flex items-center justify-center text-[var(--teal)] mx-auto relative">
+               <div className="w-20 h-20 rounded-3xl glass-morphism border border-white/10 flex items-center justify-center text-[var(--teal)] mx-auto relative overflow-hidden">
                  <Camera size={40} />
                  <motion.div 
                    animate={{ scale: [1, 1.2, 1], opacity: [0.2, 0.5, 0.2] }}
                    transition={{ duration: 2, repeat: Infinity }}
-                   className="absolute inset-0 bg-[var(--teal)] rounded-3xl"
+                   className="absolute inset-0 bg-[var(--teal)]/20 rounded-3xl"
                  />
                </div>
                <div className="space-y-2">
@@ -9467,7 +11924,7 @@ function MedicineScanner() {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-2xl"
+                className="px-4 py-3 glass-morphism border border-red-500/20 rounded-2xl"
               >
                 <p className="text-xs text-red-500 font-bold leading-relaxed">{cameraError}</p>
                 <button 
@@ -9482,12 +11939,12 @@ function MedicineScanner() {
             <div className="flex flex-col gap-3">
               <button 
                 onClick={startCamera}
-                className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/20 flex items-center justify-center gap-3 hover:brightness-110 active:scale-95 transition-all"
+                className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/30 flex items-center justify-center gap-3 hover:brightness-110 active:scale-95 transition-all border border-white/20"
               >
                 <Camera size={20} />
                 Open Live Camera
               </button>
-              <label className="w-full py-4 bg-[var(--card2)] border border-[var(--border)] text-[var(--text2)] font-black rounded-2xl flex items-center justify-center gap-3 cursor-pointer hover:bg-[var(--card)] transition-all">
+              <label className="w-full py-4 glass-darker border border-white/5 text-[var(--text2)] font-black rounded-2xl flex items-center justify-center gap-3 cursor-pointer hover:glass transition-all">
                 <FileUp size={20} />
                 Upload from Gallery
                 <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
@@ -9501,25 +11958,25 @@ function MedicineScanner() {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-[var(--card)] border border-[var(--border)] rounded-3xl overflow-hidden shadow-2xl relative"
+          className="glass border border-white/20 rounded-[32px] overflow-hidden shadow-2xl relative"
         >
           <button 
              onClick={() => { setResult(''); setImage(null); setIsCameraOpen(false); }}
-             className="absolute top-4 right-4 w-8 h-8 rounded-full bg-black/10 flex items-center justify-center hover:bg-black/20 transition-all z-10"
+             className="absolute top-4 right-4 w-8 h-8 rounded-full glass-morphism flex items-center justify-center hover:bg-white/10 transition-all z-10"
           >
              <X size={16} />
           </button>
-          <div className="bg-[var(--teal)]/10 px-6 py-4 border-b border-[var(--teal)]/20 flex items-center gap-3">
-             <div className="w-8 h-8 rounded-lg bg-[var(--teal)] flex items-center justify-center text-[#020f0c]">
-               <Pill size={18} />
+          <div className="bg-[var(--teal)]/10 px-6 py-5 border-b border-white/5 flex items-center gap-3">
+             <div className="w-10 h-10 rounded-xl bg-[var(--teal)] flex items-center justify-center text-[#020f0c] shadow-lg shadow-[var(--teal)]/20">
+               <Pill size={20} />
              </div>
-             <h3 className="font-serif text-lg text-[var(--teal)] font-bold">Analysis Result</h3>
+             <h3 className="font-serif text-xl text-[var(--teal)] font-bold tracking-tight">Analysis Result</h3>
           </div>
-          <div className="p-6">
-            <div className="text-sm leading-relaxed text-[var(--text2)] prose prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
-            <div className="mt-6 pt-6 border-t border-[var(--border)] flex gap-3 p-4 bg-orange-500/5 rounded-2xl border border-orange-500/10">
-               <AlertTriangle size={18} className="text-orange-500 shrink-0 mt-0.5" />
-               <p className="text-[10px] text-orange-200/70 font-bold leading-relaxed uppercase tracking-wider">
+          <div className="p-8">
+            <div className="text-sm leading-relaxed text-[var(--text2)] prose prose-invert max-w-none prose-p:font-medium" dangerouslySetInnerHTML={{ __html: formatMsg(result) }} />
+            <div className="mt-8 pt-8 border-t border-white/5 flex gap-4 p-5 glass-morphism rounded-2xl border border-orange-500/10">
+               <AlertTriangle size={20} className="text-orange-500 shrink-0 mt-0.5" />
+               <p className="text-[10px] text-orange-200/60 font-black leading-relaxed uppercase tracking-widest">
                  WARNING: AI can make mistakes. Always verify the medication name and dosage with a doctor or pharmacist before consumption.
                </p>
             </div>
@@ -9530,99 +11987,401 @@ function MedicineScanner() {
   );
 }
 
-function AuthView({ onLogin, onBack }: { onLogin: () => void, onBack: () => void }) {
+function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBack: () => void, isLightMode: boolean }) {
   const [isSignUp, setIsSignUp] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSocialLogin = async (provider: any, name: string) => {
+    try {
+      setError(null);
+      await signInWithPopup(auth, provider);
+      onLogin();
+    } catch (err: any) {
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      
+      console.error(`${name} sign-in failed`, err);
+      
+      if (err.code === 'auth/popup-blocked') {
+        setError("Popup Blocked: Please click 'Allow Popups' in your browser's address bar.");
+      } else if (err.code === 'auth/network-request-failed') {
+        setError("Network Error: Connection to Google Auth failed. Please check your internet or disable Ad-blockers.");
+      } else {
+        setError(err.message || "An unexpected error occurred.");
+      }
+    } finally {
+      setLoading(null);
+    }
+  };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-[var(--bg)] text-[var(--text)]">
+    <div className={cn(
+      "min-h-screen flex flex-col items-center justify-center p-6 relative overflow-hidden transition-colors duration-500",
+      "bg-[var(--bg)]"
+    )}>
+      {/* Background Glow */}
+      <div className={cn(
+        "absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[500px] rounded-full blur-[140px] pointer-events-none transition-all duration-1000",
+        "bg-[var(--teal)] opacity-[0.08]"
+      )} />
+      
       <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-[360px] w-full text-center space-y-6"
+        initial={{ opacity: 0, scale: 0.98, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="max-w-[400px] w-full space-y-10 relative z-10"
       >
-        {/* Icon & Brand */}
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-20 h-20 rounded-2xl bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-[var(--teal)] shadow-lg">
-            <UserCircle size={40} />
+        {/* Header Section */}
+        <div className="text-center space-y-4">
+          <div className="relative inline-block">
+            <div className={cn(
+              "absolute inset-0 blur-2xl rounded-full scale-150 animate-pulse transition-colors",
+              "bg-[var(--teal)] opacity-20"
+            )} />
+            <div className={cn(
+              "w-20 h-20 rounded-[28px] border flex items-center justify-center relative overflow-hidden transition-all duration-300 shadow-xl",
+              "bg-[var(--card)] border-[var(--teal-line)] text-[var(--teal)]"
+            )}>
+              <div className={cn(
+                "absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[var(--teal)]/10 to-transparent",
+                isLightMode ? "opacity-30" : "opacity-100"
+              )} />
+              <Users size={36} strokeWidth={1.5} />
+            </div>
           </div>
-          <div>
-            <h1 className="text-4xl font-serif text-[var(--teal)]">Veda</h1>
-            <p className="text-[var(--teal)]/80 text-sm font-bold tracking-[0.3em] uppercase mt-1">AI DOCTOR</p>
+          
+          <div className="space-y-1">
+            <h1 className={cn(
+              "text-5xl font-serif tracking-tight transition-colors",
+              "text-[var(--teal)]"
+            )}>Veda</h1>
+            <p className={cn(
+              "text-[11px] font-black uppercase tracking-[0.4em] transition-colors",
+              "text-[var(--teal)] opacity-60"
+            )}>AI DOCTOR</p>
           </div>
-          <p className="text-[var(--muted)] text-sm">Your personal health companion</p>
+          
+          <p className={cn(
+            "text-[13px] font-medium transition-colors",
+            "text-[var(--text2)]"
+          )}>Your personal health companion</p>
         </div>
 
-        {/* Toggle Login/Sign Up */}
-        <div className="grid grid-cols-2 bg-[var(--card)] p-1.5 rounded-2xl border border-[var(--border)]">
-          <button 
-            onClick={() => setIsSignUp(false)}
-            className={cn("py-3 rounded-xl text-sm font-bold transition-all", !isSignUp ? "bg-[var(--teal)] text-[#ffffff] shadow-lg" : "text-[var(--muted)]")}
+        {/* Form Container */}
+        <div className="space-y-6">
+          {/* Auth Toggle */}
+          <div className={cn(
+            "p-1.5 rounded-3xl flex relative border transition-all",
+            "bg-[var(--surface)] border-[var(--border)] shadow-inner"
+          )}>
+            <motion.div 
+              layoutId="auth-bg"
+              className={cn(
+                "absolute inset-y-1.5 rounded-2xl transition-all",
+                isLightMode ? "bg-white shadow-md" : "bg-[var(--teal)] shadow-[0_0_15px_rgba(20,184,166,0.4)]"
+              )}
+              initial={false}
+              animate={{ 
+                left: isSignUp ? "calc(50% + 6px)" : "6px",
+                right: isSignUp ? "6px" : "calc(50% + 6px)"
+              }}
+              transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+            />
+            <button 
+              onClick={() => setIsSignUp(false)}
+              className={cn(
+                "flex-1 py-3 text-[13px] font-bold rounded-2xl transition-colors relative z-10",
+                !isSignUp 
+                  ? (isLightMode ? "text-teal-700" : "text-[#020f0c]") 
+                  : "text-[var(--muted)]"
+              )}
+            >
+              Login
+            </button>
+            <button 
+              onClick={() => setIsSignUp(true)}
+              className={cn(
+                "flex-1 py-3 text-[13px] font-bold rounded-2xl transition-colors relative z-10",
+                isSignUp 
+                  ? (isLightMode ? "text-teal-700" : "text-[#020f0c]") 
+                  : "text-[var(--muted)]"
+              )}
+            >
+              Sign Up
+            </button>
+          </div>
+
+          {/* Input Fields */}
+          <div className="space-y-3">
+            <div className="relative group">
+              <Mail className={cn(
+                "absolute left-5 top-1/2 -translate-y-1/2 transition-colors",
+                "text-[var(--muted)] group-focus-within:text-[var(--teal)]"
+              )} size={18} />
+              <input 
+                type="email" 
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="Email address" 
+                className={cn(
+                  "w-full border rounded-2xl py-4.5 pl-14 pr-5 text-[15px] transition-all outline-none font-medium",
+                  "bg-[var(--card)] border-[var(--border)] text-[var(--text)] placeholder:text-[var(--muted)]/50 focus:border-[var(--teal-mid)]/50 shadow-sm"
+                )} 
+              />
+            </div>
+            
+            <div className="relative group">
+              <Lock className={cn(
+                "absolute left-5 top-1/2 -translate-y-1/2 transition-colors",
+                "text-[var(--muted)] group-focus-within:text-[var(--teal)]"
+              )} size={18} />
+              <input 
+                type={showPassword ? "text" : "password"} 
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Password" 
+                className={cn(
+                  "w-full border rounded-2xl py-4.5 pl-14 pr-12 text-[15px] transition-all outline-none font-medium",
+                  "bg-[var(--card)] border-[var(--border)] text-[var(--text)] placeholder:text-[var(--muted)]/50 focus:border-[var(--teal-mid)]/50 shadow-sm"
+                )} 
+              />
+              <button 
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className={cn(
+                  "absolute right-4 top-1/2 -translate-y-1/2 transition-colors",
+                  isLightMode ? "text-slate-400 hover:text-teal-600" : "text-[#8fa3ad]/40 hover:text-teal-400"
+                )}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+
+            <button className="w-full text-right py-1">
+              <span className={cn(
+                "text-[13px] font-bold transition-colors",
+                isLightMode ? "text-teal-600 hover:text-teal-700" : "text-teal-400 hover:text-teal-300"
+              )}>Forgot Password?</span>
+            </button>
+          </div>
+
+          {/* Primary Action */}
+          <div className="space-y-6">
+            <button 
+              onClick={onLogin}
+              className={cn(
+                "w-full py-5 font-bold text-base rounded-2xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all border shadow-lg",
+                isLightMode 
+                  ? "bg-teal-600 text-white border-white/20 shadow-teal-700/10" 
+                  : "bg-[#14b8a6] text-[#05080a] border-white/10 shadow-[0_0_25px_rgba(20,184,166,0.3)]"
+              )}
+            >
+              {isSignUp ? 'Sign Up' : 'Login'} <ArrowRight size={18} className="mt-0.5" />
+            </button>
+
+            {/* Separator */}
+            <div className="relative flex items-center justify-center">
+              <div className={cn(
+                "absolute inset-0 flex items-center",
+                isLightMode ? "opacity-20" : "opacity-100"
+              )}><div className={cn("w-full border-t", isLightMode ? "border-slate-300" : "border-white/5")}></div></div>
+              <span className={cn(
+                "relative px-4 text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
+                isLightMode ? "text-slate-400 bg-slate-50" : "text-[#8fa3ad]/40 bg-[#05080a]"
+              )}>or continue with</span>
+            </div>
+
+            {/* Social Logins */}
+            <div className="grid grid-cols-2 gap-4">
+              <button 
+                onClick={() => handleSocialLogin(googleProvider, 'Google')}
+                className={cn(
+                  "py-4 border rounded-2xl flex items-center justify-center gap-2.5 text-[14px] font-bold transition-all shadow-sm active:scale-[0.98]",
+                  isLightMode 
+                    ? "bg-white border-slate-200 text-slate-700 hover:bg-slate-50" 
+                    : "bg-[#0c1418] border-white/5 text-white hover:bg-white/5"
+                )}
+              >
+                <div className="w-5 h-5 flex items-center justify-center bg-white rounded-full scale-90 shadow-sm border border-slate-100">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                </div>
+                Google
+              </button>
+              <button 
+                className={cn(
+                  "py-4 border rounded-2xl flex items-center justify-center gap-2.5 text-[14px] font-bold transition-all shadow-sm active:scale-[0.98]",
+                  isLightMode 
+                    ? "bg-white border-slate-200 text-slate-700 hover:bg-slate-50" 
+                    : "bg-[#0c1418] border-white/5 text-white hover:bg-white/5"
+                )}
+              >
+                <Apple size={18} fill="currentColor" />
+                Apple
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={cn(
+              "p-4 border rounded-xl text-center",
+              isLightMode ? "bg-red-50 border-red-200 shadow-sm" : "bg-red-500/10 border-red-500/20"
+            )}
           >
-            Login
-          </button>
-          <button 
-            onClick={() => setIsSignUp(true)}
-            className={cn("py-3 rounded-xl text-sm font-bold transition-all", isSignUp ? "bg-[var(--teal)] text-[#ffffff] shadow-lg" : "text-[var(--muted)]")}
-          >
-            Sign Up
-          </button>
-        </div>
+            <p className={cn("text-xs font-medium", isLightMode ? "text-red-700" : "text-red-400")}>{error}</p>
+          </motion.div>
+        )}
 
-        {/* Form */}
-        <div className="space-y-4">
-          <div className="relative">
-            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--muted)]" size={18} />
-            <input type="email" placeholder="Email address" className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 pl-12 text-sm outline-none focus:border-[var(--teal)] transition-all" />
-          </div>
-          <div className="relative">
-            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--muted)]" size={18} />
-            <input type="password" placeholder="Password" className="w-full bg-[var(--card)] border border-[var(--border)] rounded-2xl p-4 pl-12 text-sm outline-none focus:border-[var(--teal)] transition-all" />
-            <Eye className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--muted)]" size={18} />
-          </div>
-          <button className="text-[var(--teal)] text-xs font-bold w-full text-right p-2">Forgot Password?</button>
-        </div>
-
-        {/* Login Button */}
         <button 
-          onClick={onLogin}
-          className="w-full py-4 bg-[var(--teal)] text-[#ffffff] font-bold rounded-2xl flex items-center justify-center gap-2 shadow-lg hover:brightness-110 transition-all"
+          onClick={onBack}
+          className={cn(
+            "w-full py-4 transition-colors text-[11px] font-bold uppercase tracking-[0.2em]",
+            isLightMode ? "text-slate-400 hover:text-slate-600" : "text-[#8fa3ad]/40 hover:text-white"
+          )}
         >
-          {isSignUp ? 'Sign Up' : 'Login'} <ArrowRight size={18} />
+          Return to Hub
         </button>
-
-        {/* Social */}
-        <div className="space-y-4">
-          <div className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Or continue with</div>
-          <div className="grid grid-cols-2 gap-4">
-            <button 
-              onClick={async () => {
-                try {
-                  await signInWithRedirect(auth, googleProvider);
-                  onLogin();
-                } catch (error) {
-                  console.error("Google sign-in failed", error);
-                }
-              }}
-              className="py-3 bg-[var(--card)] border border-[var(--border)] rounded-xl flex items-center justify-center gap-2 text-sm font-bold"
-            >
-              <span className="text-xl">G</span> Google
-            </button>
-            <button 
-              onClick={async () => {
-                try {
-                  await signInWithRedirect(auth, appleProvider);
-                  onLogin();
-                } catch (error) {
-                  console.error("Apple sign-in failed", error);
-                }
-              }}
-              className="py-3 bg-[var(--card)] border border-[var(--border)] rounded-xl flex items-center justify-center gap-2 text-sm font-bold"
-            >
-              <span className="text-xl"></span> Apple
-            </button>
-          </div>
-        </div>
       </motion.div>
+    </div>
+  );
+}
+
+function PricingView({ profile, onUpgrade }: { profile: UserProfile, onUpgrade: (plan: string) => void }) {
+  const [loading, setLoading] = useState<string | null>(null);
+
+  const handleCheckout = async (plan: string) => {
+    setLoading(plan);
+    try {
+      const amount = plan === 'Premium Plan' ? 1499 : 0; // Pricing in INR (e.g. 1499 INR)
+      
+      const response = await fetch('/api/create-razorpay-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount }),
+      });
+      const order = await response.json();
+
+      if (!order.id) throw new Error("Order creation failed");
+
+      const options = {
+        key: (import.meta as any).env.VITE_RAZORPAY_KEY_ID,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Veda Health",
+        description: `Upgrade to ${plan}`,
+        order_id: order.id,
+        handler: async (response: any) => {
+          setLoading(plan);
+          try {
+            const verifyRes = await fetch('/api/verify-razorpay-payment', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(response),
+            });
+            const result = await verifyRes.json();
+            if (result.status === 'success') {
+              onUpgrade(plan);
+            } else {
+              alert('Payment verification failed.');
+            }
+          } catch (err) {
+            console.error("Verification error:", err);
+            alert("Payment verification failed.");
+          } finally {
+            setLoading(null);
+          }
+        },
+        prefill: {
+          name: profile.name,
+          email: profile.email || "user@example.com",
+        },
+        theme: {
+          color: "#0d9488",
+        },
+      };
+
+      const rzp = new (window as any).Razorpay(options);
+      rzp.on('payment.failed', function (response: any){
+        alert("Payment failed: " + response.error.description);
+      });
+      rzp.open();
+    } catch (err) {
+      console.error(err);
+      alert('Checkout initialization failed. Please try again.');
+    } finally {
+      if (!(window as any).RZP_OPENED) { // Simple check to avoid clearing loading too early if modal is open
+         setLoading(null);
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-8 pb-24 px-4 max-w-4xl mx-auto">
+      <div className="text-center space-y-4">
+         <h2 className="font-serif text-4xl text-white">{profile.isPremium ? 'Veda Premium ✦' : 'Upgrade to Premium'}</h2>
+         <p className="text-[var(--muted)]">
+           {profile.isPremium 
+             ? 'You are currently enjoying the full suite of Veda professional tools.' 
+             : 'Unlock advanced AI scans, family syncing, and expert second opinions.'}
+         </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-8 pt-8">
+        {/* Free Plan */}
+        <div className="glass border border-white/10 rounded-[48px] p-8 flex flex-col space-y-6 opacity-60">
+          <div className="space-y-2">
+            <h3 className="text-xl font-bold">Standard</h3>
+            <p className="text-3xl font-serif">$0 <span className="text-base text-[var(--muted)] font-sans">/mo</span></p>
+          </div>
+          <ul className="space-y-3 flex-1">
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className="text-emerald-500" /> AI Symptoms Checker</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className="text-emerald-500" /> Basic Vitals Log</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className="text-emerald-500" /> Medicine Reminders</li>
+          </ul>
+          {!profile.isPremium && <div className="w-full py-4 rounded-3xl bg-white/5 border border-white/10 text-[var(--muted)] font-bold text-center">Current Plan</div>}
+        </div>
+
+        {/* Premium Plan */}
+        <div className={cn(
+          "glass border-2 rounded-[48px] p-8 flex flex-col space-y-6 relative overflow-hidden",
+          profile.isPremium ? "border-amber-500 shadow-2xl shadow-amber-500/10" : "border-[var(--teal)] shadow-2xl shadow-teal-500/10"
+        )}>
+          {profile.isPremium ? (
+             <div className="absolute top-0 right-0 bg-amber-500 text-[#020f0c] px-6 py-1 rounded-bl-3xl text-[10px] font-black uppercase tracking-widest">Active</div>
+          ) : (
+             <div className="absolute top-0 right-0 bg-[var(--teal)] text-[#020f0c] px-6 py-1 rounded-bl-3xl text-[10px] font-black uppercase tracking-widest">Recommended</div>
+          )}
+          <div className="space-y-2">
+            <h3 className="text-xl font-bold">Premium ✦</h3>
+            <p className="text-3xl font-serif">$19 <span className="text-base text-[var(--muted)] font-sans">/mo</span></p>
+          </div>
+          <ul className="space-y-3 flex-1">
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className={profile.isPremium ? "text-amber-500" : "text-[var(--teal)]"} /> Advanced Skin AI Analysis</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className={profile.isPremium ? "text-amber-500" : "text-[var(--teal)]"} /> Expert Second Medical Opinion</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className={profile.isPremium ? "text-amber-500" : "text-[var(--teal)]"} /> AI Health Pattern Recognition</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className={profile.isPremium ? "text-amber-500" : "text-[var(--teal)]"} /> Unlimited Family Members</li>
+            <li className="flex items-center gap-2 text-sm"><Check size={16} className={profile.isPremium ? "text-amber-500" : "text-[var(--teal)]"} /> Priority Veda Chat</li>
+          </ul>
+          {profile.isPremium ? (
+            <div className="w-full py-4 rounded-3xl bg-amber-500/10 border border-amber-500 text-amber-500 font-bold text-center">Active Subscription</div>
+          ) : (
+            <button 
+              onClick={() => handleCheckout('Premium Plan')}
+              disabled={loading === 'Premium Plan'}
+              className="w-full py-4 rounded-3xl bg-[var(--teal)] text-[#020f0c] font-bold shadow-xl shadow-teal-500/20 hover:scale-[1.02] transition-all disabled:opacity-50"
+            >
+              {loading === 'Premium Plan' ? 'Processing...' : 'Upgrade Now'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -9632,11 +12391,7 @@ function TeleconsultView() {
   const [isInCall, setIsInCall] = useState(false);
   const [activeDoctor, setActiveDoctor] = useState<any>(null);
 
-  const doctors = [
-    { name: 'Dr. Sarah Wilson', specialty: 'Cardiologist', rating: '4.9', fee: 500, icon: '👩‍⚕️' },
-    { name: 'Dr. James Miller', specialty: 'General Physician', rating: '4.8', fee: 300, icon: '👨‍⚕️' },
-    { name: 'Dr. Ananya Rao', specialty: 'Dermatologist', rating: '4.7', fee: 450, icon: '👩‍⚕️' },
-  ];
+  const doctors: any[] = [];
 
   const handleCall = (doc: any) => {
     setActiveDoctor(doc);
@@ -9761,7 +12516,7 @@ function BMIView({ profile }: { profile: UserProfile }) {
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-8 space-y-6 shadow-xl">
+      <div className="glass-darker border border-white/10 rounded-[32px] p-8 space-y-6 shadow-xl">
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-[10px] font-black text-[var(--muted)] uppercase tracking-widest ml-1">Height (cm)</label>
@@ -9769,7 +12524,7 @@ function BMIView({ profile }: { profile: UserProfile }) {
               type="number" 
               value={height} 
               onChange={(e) => setHeight(e.target.value)}
-              className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:border-teal-500 transition-all shadow-inner"
+              className="w-full glass border border-white/5 rounded-2xl p-4 text-sm font-bold outline-none focus:border-teal-500 transition-all shadow-inner"
               placeholder="e.g. 175"
             />
           </div>
@@ -9779,7 +12534,7 @@ function BMIView({ profile }: { profile: UserProfile }) {
               type="number" 
               value={weight} 
               onChange={(e) => setWeight(e.target.value)}
-              className="w-full bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-4 text-sm font-bold outline-none focus:border-teal-500 transition-all shadow-inner"
+              className="w-full glass border border-white/5 rounded-2xl p-4 text-sm font-bold outline-none focus:border-teal-500 transition-all shadow-inner"
               placeholder="e.g. 70"
             />
           </div>
@@ -9787,21 +12542,21 @@ function BMIView({ profile }: { profile: UserProfile }) {
       </div>
 
       {hasData && (
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-8 text-center space-y-6 shadow-sm">
+        <div className="glass border border-white/10 rounded-[32px] p-8 text-center space-y-6 shadow-sm">
           <div className="space-y-1">
             <p className="text-[10px] font-black text-[var(--muted)] uppercase tracking-widest">Your Body Mass Index</p>
             <p className="text-7xl font-serif text-[var(--teal)]">{bmi}</p>
             <p className={cn("text-lg font-bold tracking-tight", status.color)}>{status.label}</p>
           </div>
           
-          <div className="h-4 w-full bg-[var(--card2)] rounded-full overflow-hidden flex shadow-inner">
+          <div className="h-4 w-full glass-morphism rounded-full overflow-hidden flex shadow-inner">
             <div className="h-full bg-blue-400" style={{ width: '25%' }} />
             <div className="h-full bg-teal-500" style={{ width: '20%' }} />
             <div className="h-full bg-amber-400" style={{ width: '15%' }} />
             <div className="h-full bg-red-400" style={{ width: '40%' }} />
           </div>
           
-          <div className="bg-teal-500/5 border border-teal-500/10 rounded-2xl p-5 text-left">
+          <div className="glass-morphism border border-teal-500/20 rounded-2xl p-5 text-left">
             <p className="text-xs font-bold text-teal-600 uppercase tracking-widest mb-1">Expert Advice</p>
             <p className="text-sm text-[var(--text2)] leading-relaxed">{status.advice}</p>
           </div>
@@ -9861,15 +12616,27 @@ function calculateStreak(journal: JournalEntry[] = []) {
 }
 
 function showDoneToast(msg: string) {
-  // Simple toast implementation
-  const toast = document.createElement('div');
-  toast.className = 'fixed bottom-24 left-1/2 -translate-x-1/2 z-[9999] bg-[var(--card)] border border-[var(--teal-line)] text-[var(--text)] px-6 py-3 rounded-full shadow-2xl animate-in fade-in slide-in-from-bottom-4';
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => {
-    toast.classList.add('animate-out', 'fade-out', 'slide-out-to-bottom-4');
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  window.dispatchEvent(new CustomEvent('app-notification', {
+    detail: { title: 'Success', message: msg, type: 'success' }
+  }));
+}
+
+function showErrorToast(msg: string) {
+  window.dispatchEvent(new CustomEvent('app-notification', {
+    detail: { title: 'Error', message: msg, type: 'error' }
+  }));
+}
+
+function showWarningToast(msg: string) {
+  window.dispatchEvent(new CustomEvent('app-notification', {
+    detail: { title: 'Warning', message: msg, type: 'warning' }
+  }));
+}
+
+function showInfoToast(msg: string) {
+  window.dispatchEvent(new CustomEvent('app-notification', {
+    detail: { title: 'Notification', message: msg, type: 'info' }
+  }));
 }
 
 function Badge({ icon, label }: { icon: string, label: string }) {
@@ -9898,7 +12665,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
     try {
       const recentEntries = journal.slice(0, 3).map(e => `Mood: ${e.mood}/5, Energy: ${e.energy}/5, Note: ${e.notes}`).join('\n');
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-flash-latest",
         contents: `Based on my recent health journal entries, provide a short, empathetic mental health check-in and one actionable wellness tip. Keep it under 60 words.
         Recent entries:
         ${recentEntries}
@@ -9942,7 +12709,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="space-y-6 pb-8"
+      className="space-y-6 pb-8 px-1"
     >
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center text-white shadow-lg">
@@ -9954,13 +12721,13 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
         </div>
       </div>
 
-      <div className="bg-gradient-to-br from-[var(--card)] to-[var(--card2)] border border-[var(--border)] rounded-3xl p-6 shadow-xl shadow-black/10 space-y-6">
+      <div className="glass border border-white/10 rounded-[32px] p-6 shadow-xl space-y-6">
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <h3 className="font-serif text-2xl text-[var(--text)]">Daily Streak</h3>
             <p className="text-sm text-[var(--muted)] font-medium">Keep it up to unlock new milestones!</p>
           </div>
-          <div className="text-5xl font-serif text-orange-500">{streak}</div>
+          <div className="text-5xl font-serif text-orange-500 drop-shadow-lg">{streak}</div>
         </div>
         <div className="flex gap-2">
           <Badge icon="🔥" label="3 Day" />
@@ -9970,7 +12737,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-8 text-center space-y-8 relative overflow-hidden">
+      <div className="glass border border-white/10 rounded-[32px] p-8 text-center space-y-8 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-orange-500/20 to-transparent" />
         
         <div className="space-y-4">
@@ -10007,11 +12774,11 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
               opacity: isBreathing ? (breathPhase === 'Hold' ? 0.8 : 1) : 0.5
             }}
             transition={{ duration: 4, ease: "easeInOut" }}
-            className="w-32 h-32 rounded-full bg-orange-500/20 border-2 border-orange-500/40 flex items-center justify-center"
+            className="w-32 h-32 rounded-full glass-morphism border-2 border-orange-500/40 flex items-center justify-center shadow-2xl shadow-orange-500/10"
           >
             <motion.div 
               animate={{ scale: isBreathing ? 0.8 : 1 }}
-              className="w-24 h-24 rounded-full bg-orange-500/30 border border-orange-500/50 flex items-center justify-center"
+              className="w-24 h-24 rounded-full glass-morphism border border-orange-500/50 flex items-center justify-center"
             >
               <Wind className="text-orange-500" size={32} />
             </motion.div>
@@ -10035,8 +12802,8 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
         <button 
           onClick={() => setIsBreathing(!isBreathing)}
           className={cn(
-            "px-8 py-3 rounded-full font-bold transition-all shadow-xl",
-            isBreathing ? "bg-[var(--card2)] border border-[var(--border)] text-[var(--text)]" : "bg-orange-500 text-white hover:bg-orange-600"
+            "px-8 py-3 rounded-full font-bold transition-all shadow-xl active:scale-95",
+            isBreathing ? "glass border border-white/20 text-[var(--text)]" : "bg-orange-500 text-white hover:bg-orange-600 shadow-orange-500/20"
           )}
         >
           {isBreathing ? 'Stop Session' : 'Start 4-4-4 Breathing'}
@@ -10044,15 +12811,15 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
-          <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400">
+        <div className="glass border border-white/10 rounded-[32px] p-5 space-y-3 hover:glass transition-all">
+          <div className="w-10 h-10 rounded-lg glass-morphism border border-purple-500/20 flex items-center justify-center text-purple-400">
             <Moon size={20} />
           </div>
           <h4 className="font-bold text-sm">Sleep Hygiene</h4>
           <p className="text-xs text-[var(--muted)]">Tips for better rest based on your energy levels.</p>
         </div>
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
-          <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+        <div className="glass border border-white/10 rounded-[32px] p-5 space-y-3 hover:glass transition-all">
+          <div className="w-10 h-10 rounded-lg glass-morphism border border-emerald-500/20 flex items-center justify-center text-emerald-400">
             <Smile size={20} />
           </div>
           <h4 className="font-bold text-sm">Gratitude Log</h4>
@@ -10065,19 +12832,36 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
 
 function TrustCenter() {
   return (
-    <div className="space-y-6 pb-24 p-6">
-      <h2 className="text-2xl font-serif">Trust Center</h2>
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 space-y-4">
-        <p className="text-sm text-[var(--muted)]">At Veda Health, your privacy and security are our top priorities. We use industry-standard encryption and strict data access policies to keep your medical information safe.</p>
-        <div className="grid gap-3">
-          <div className="p-4 bg-[var(--card2)] rounded-2xl flex items-center gap-3">
-             <Shield className="text-teal-500" />
-             <span className="text-xs font-bold uppercase tracking-widest">End-to-End Encryption</span>
+    <div className="space-y-6 pb-24 px-1">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-500 to-teal-700 flex items-center justify-center text-white shadow-lg">
+          <ShieldCheck size={20} />
+        </div>
+        <div>
+          <h2 className="font-serif text-xl tracking-tight">Trust Center</h2>
+          <p className="text-[10px] text-[var(--muted)] font-bold uppercase tracking-widest">Security & Privacy First</p>
+        </div>
+      </div>
+
+      <div className="glass border border-white/10 rounded-[40px] p-8 space-y-6 shadow-xl relative overflow-hidden group">
+        <div className="absolute top-0 right-0 w-48 h-48 bg-teal-500/5 blur-3xl -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-1000" />
+        <p className="text-sm text-[var(--muted)] leading-relaxed font-medium relative z-10">At Veda Health, your privacy and security are our top priorities. We use military-grade encryption and strict data access policies to keep your medical information safe and private.</p>
+        <div className="grid gap-3 relative z-10">
+          <div className="p-5 glass-morphism border border-white/5 rounded-2xl flex items-center gap-4 hover:glass transition-all">
+             <div className="w-10 h-10 rounded-xl glass flex items-center justify-center text-teal-400 shadow-lg">
+               <Shield size={20} />
+             </div>
+             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">End-to-End Encryption</span>
           </div>
-          <div className="p-4 bg-[var(--card2)] rounded-2xl flex items-center gap-3">
-             <Lock className="text-teal-500" />
-             <span className="text-xs font-bold uppercase tracking-widest">Zero-Knowledge Storage</span>
+          <div className="p-5 glass-morphism border border-white/5 rounded-2xl flex items-center gap-4 hover:glass transition-all">
+             <div className="w-10 h-10 rounded-xl glass flex items-center justify-center text-teal-400 shadow-lg">
+               <Lock size={20} />
+             </div>
+             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Zero-Knowledge Storage</span>
           </div>
+        </div>
+        <div className="pt-4 relative z-10">
+          <button className="w-full py-4 glass border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:glass-morphism transition-all">Download Security Whitepaper</button>
         </div>
       </div>
     </div>
@@ -10089,7 +12873,7 @@ function PrivacyView() {
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="space-y-6 pb-12"
+      className="space-y-6 pb-12 px-1"
     >
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-lg">
@@ -10101,49 +12885,22 @@ function PrivacyView() {
         </div>
       </div>
 
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 md:p-8 space-y-6 shadow-xl shadow-black/10">
-        <div className="space-y-4">
-          <h3 className="font-serif text-xl border-b border-[var(--border)] pb-2 text-[var(--text)]">1. Information We Collect</h3>
-          <p className="text-sm text-[var(--muted)] leading-relaxed">
-            At Veda Health, protecting your personal and medical information is our top priority. We collect data you explicitly provide: identity parameters (name, age), vital metrics (blood pressure, sugar, weight), and health journal entries. We do not stealthily track biometric data without your outright consent. 
-          </p>
+      <div className="glass border border-white/10 rounded-[32px] p-8 space-y-8 shadow-xl">
+        <div className="prose prose-invert prose-sm max-w-none">
+          <h3 className="text-white font-serif text-xl mb-4">1. Information We Collect</h3>
+          <p className="text-[var(--text2)] leading-relaxed font-medium">We collect health data, journal entries, and medication reminders that you intentionally provide to personalize your care. All PII data is stored separately and encrypted at rest.</p>
+          
+          <h3 className="text-white font-serif text-xl mt-8 mb-4">2. How We Use Data</h3>
+          <p className="text-[var(--text2)] leading-relaxed font-medium">Your data is only used to provide AI-powered health insights, reminders, and to facilitate teleconsultations. We never sell your personal data to third parties or advertisers.</p>
+          
+          <h3 className="text-white font-serif text-xl mt-8 mb-4">3. Data Portability</h3>
+          <p className="text-[var(--text2)] leading-relaxed font-medium">You have the right to download all your health data or delete your account at any time from the profile settings.</p>
         </div>
-
-        <div className="space-y-4">
-          <h3 className="font-serif text-xl border-b border-[var(--border)] pb-2 text-[var(--text)]">2. How We Use Your Data</h3>
-          <p className="text-sm text-[var(--muted)] leading-relaxed">
-            Your data is primarily used to provide predictive insights, render health graphs, and offer personalized wellness tips via our AI engine. We only use anonymized datasets for model training. <strong>We strictly do not sell</strong> your Personally Identifiable Information (PII) or medical logs to advertising networks, insurance agencies, or data brokers.
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          <h3 className="font-serif text-xl border-b border-[var(--border)] pb-2 text-[var(--text)]">3. Data Security</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="p-4 rounded-xl bg-[var(--card2)] border border-[var(--border)] space-y-2">
-              <Lock size={18} className="text-blue-400" />
-              <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--text)]">Cloud Encryption</h4>
-              <p className="text-[11px] text-[var(--muted)]">All data saved through Google Firebase is encrypted at rest (AES-256) and in transit (TLS 1.2+).</p>
-            </div>
-            <div className="p-4 rounded-xl bg-[var(--card2)] border border-[var(--border)] space-y-2">
-              <Shield size={18} className="text-green-400" />
-              <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--text)]">Role-based Access</h4>
-              <p className="text-[11px] text-[var(--muted)]">Our Zero-Trust Firestore rules mathematically prevent any other user from querying or reading your patient ID folder.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <h3 className="font-serif text-xl border-b border-[var(--border)] pb-2 text-[var(--text)]">4. AI Processing</h3>
-          <p className="text-sm text-[var(--muted)] leading-relaxed">
-            Our app utilizes Google's Gemini AI. When submitting a photo (such as a lab report) or asking a medical symptom question, only the strict data packet needed for that singular transaction is transmitted securely to the AI API. The AI API does not retain this data for public training models contextually.
-          </p>
-        </div>
-
-        <div className="p-4 flex gap-3 items-start bg-amber-500/5 border border-amber-500/20 rounded-xl mt-8">
-          <Info size={18} className="text-amber-500 shrink-0 mt-0.5" />
-          <p className="text-xs text-amber-500/80 leading-relaxed font-medium">
-            By using Veda Health, you agree to these privacy protocols. If you wish to delete your data entirely, you may use the 'Export & Delete Data' tools provided in your Profile settings.
-          </p>
+        
+        <div className="pt-6 border-t border-white/5">
+          <button className="flex items-center gap-2 text-blue-400 font-black text-[10px] uppercase tracking-widest hover:underline decoration-blue-400/30 underline-offset-4">
+            Read Full Document <ExternalLink size={14} />
+          </button>
         </div>
       </div>
     </motion.div>

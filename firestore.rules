@@ -96,12 +96,16 @@ service cloud.firestore {
     }
 
     function isValidReminder(data) {
-      return data.keys().hasAll(['name', 'dose', 'time', 'freq', 'on']) &&
+      return data.keys().hasAll(['name', 'dose', 'time', 'freq', 'on', 'color']) &&
              data.name is string && data.name.size() <= 100 &&
              data.dose is string && data.dose.size() <= 100 &&
              data.time is string && data.time.size() <= 20 &&
              data.freq is string && data.freq.size() <= 50 &&
-             data.on is bool;
+             data.on is bool &&
+             data.color is string &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+              (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
+              (!('refillDays' in data) || data.refillDays is int);
     }
 
     function isValidRecord(data) {
@@ -129,12 +133,15 @@ service cloud.firestore {
     }
 
     function isValidAppointment(data) {
-      return data.keys().hasAll(['clinicName', 'date', 'time', 'status', 'patientId']) &&
+      return data.keys().hasAll(['clinicName', 'date', 'time', 'status', 'patientId', 'clinicId', 'patientName', 'type']) &&
              data.clinicName is string && data.clinicName.size() <= 200 &&
              data.date is string && data.date.size() <= 20 &&
              data.time is string && data.time.size() <= 20 &&
              data.status is string && data.status.size() <= 50 &&
-             data.patientId == request.auth.uid;
+             data.patientId == request.auth.uid &&
+             data.clinicId is string &&
+             data.patientName is string &&
+             data.type is string && data.type.size() <= 100;
     }
 
     function isValidAccessLog(data) {
@@ -151,6 +158,31 @@ service cloud.firestore {
              data.name is string &&
              data.canViewAlerts is bool &&
              data.canViewMedications is bool;
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['title', 'createdAt', 'lastMessageAt']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.createdAt is string &&
+             data.lastMessageAt is string;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['role', 'content', 'timestamp']) &&
+             data.role in ['user', 'assistant', 'system'] &&
+             data.content is string && data.content.size() <= 10000 &&
+             data.timestamp is string;
+    }
+
+    function isValidLockerDoc(data) {
+      return data.keys().hasAll(['name', 'category', 'date', 'fileData', 'isEncrypted', 'mimeType']) &&
+             data.name is string && data.name.size() <= 200 &&
+             data.category in ['prescription', 'scan', 'report', 'insurance', 'other'] &&
+             data.date is string &&
+             data.fileData is string && data.fileData.size() <= 1048576 && // 1MB total doc limit
+             data.isEncrypted is bool &&
+             data.mimeType is string &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000));
     }
 
     // ===============================================================
@@ -192,7 +224,7 @@ service cloud.firestore {
         allow create: if isOwner(userId) && isEmailVerified() && isValidReminder(incoming());
         allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
           isValidReminder(incoming()) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dose', 'time', 'freq', 'on'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dose', 'time', 'freq', 'on', 'color', 'note', 'category', 'refillDays'])
         );
         allow delete: if isOwner(userId) || isAdmin();
       }
@@ -232,7 +264,7 @@ service cloud.firestore {
         allow create: if isOwner(userId) && isEmailVerified() && isValidAppointment(incoming());
         allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
           isValidAppointment(incoming()) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['clinicName', 'date', 'time', 'status'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['clinicName', 'date', 'time', 'status', 'type'])
         );
         allow delete: if isOwner(userId) || isAdmin();
       }
@@ -248,6 +280,32 @@ service cloud.firestore {
         allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
           isValidFamilyPermission(incoming()) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['canViewAlerts', 'canViewMedications', 'canViewRecords'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /conversations/{chatId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidConversation(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidConversation(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'lastMessageAt'])
+        );
+        allow delete: if isOwner(userId) || isAdmin();
+
+        match /messages/{messageId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow create: if isOwner(userId) && isEmailVerified() && isValidChatMessage(incoming());
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+      }
+
+      match /locker/{docId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isEmailVerified() && isValidLockerDoc(incoming());
+        allow update: if (isOwner(userId) || isAdmin()) && isEmailVerified() && (
+          isValidLockerDoc(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'notes'])
         );
         allow delete: if isOwner(userId) || isAdmin();
       }

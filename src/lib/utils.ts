@@ -22,7 +22,8 @@ export function formatCurrency(amount: number, currency: string = 'USD') {
 }
 
 export function formatCoverage(amount: number) {
-  if (amount >= 1000000) return (amount / 1000000) + 'M';
+  if (amount >= 10000000) return (amount / 10000000) + ' Cr';
+  if (amount >= 100000) return (amount / 100000) + ' L';
   if (amount >= 1000) return (amount / 1000) + 'K';
   return amount.toString();
 }

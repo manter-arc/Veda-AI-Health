@@ -28,6 +28,9 @@ export interface UserProfile {
   corporateId?: string;
   setupDone: boolean;
   notificationsEnabled?: boolean;
+  streakCount?: number;
+  lastTrackedDate?: string;
+  vitalityScore?: number;
   updatedAt?: string;
   isPremium?: boolean;
   accessLogs?: AccessLogEntry[];
@@ -48,6 +51,8 @@ export interface FamilyPermission {
   canViewAlerts: boolean;
   canViewMedications: boolean;
   canViewRecords: boolean;
+  canViewLocker: boolean;
+  isCaregiver: boolean;
 }
 
 export interface JournalEntry {
@@ -90,6 +95,10 @@ export interface MedicalRecord {
   labValues?: string;
   diagnosis?: string;
   medicines?: string;
+  hospital?: string;
+  status?: string;
+  color?: string;
+  fileUrl?: string;
   createdAt?: string;
 }
 
@@ -102,6 +111,11 @@ export interface FamilyMember {
   medicalHistory?: string[];
   medications?: string[];
   allergies?: string[];
+  reminders?: Reminder[];
+  appointments?: Appointment[];
+  canAccessLocker?: boolean;
+  canAccessSOS?: boolean;
+  isEmergencyContact?: boolean;
 }
 
 export interface InsurancePlan {
@@ -165,6 +179,30 @@ export interface CorporateChallenge {
   status: 'active' | 'completed' | 'joined';
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+export interface ChatConversation {
+  id: string;
+  title: string;
+  lastMessageAt: string;
+  createdAt: string;
+}
+
+export interface HealthDocument {
+  id: string;
+  name: string;
+  category: 'prescription' | 'scan' | 'report' | 'insurance' | 'other';
+  date: string;
+  fileData: string; // Base64 for simplicity in this environment
+  notes?: string;
+  isEncrypted: boolean;
+  mimeType: string;
+}
+
 export type AppMode = 
   | 'landing'
   | 'home'
@@ -207,4 +245,14 @@ export type AppMode =
   | 'wellness'
   | 'sos'
   | 'membership'
+  | 'locker'
   | 'profile';
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  timestamp: string;
+  duration?: number;
+}
