@@ -43,7 +43,7 @@ export async function callGemini(prompt: string, systemInstruction: string = SYS
 }
 
 export async function analyzePrescription(base64Data: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const prompt = `Analyze this medical prescription image. Extract all medications.
   For each medication, find:
@@ -79,7 +79,7 @@ export async function analyzePrescription(base64Data: string) {
   };
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [
         {
@@ -105,7 +105,7 @@ export async function analyzePrescription(base64Data: string) {
 }
 
 export async function getWellnessResponse(message: string, history: { role: 'user' | 'model', parts: any[] }[], profile: UserProfile) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const systemInstruction = `You are Veda's Wellness Coach. You are an empathetic, calm, and insightful mental health companion.
   Your goals:
@@ -118,7 +118,7 @@ export async function getWellnessResponse(message: string, history: { role: 'use
   - Keep responses concise but meaningful.`;
 
   try {
-    const chat = genAI.chats.create({
+    const chat = ai.chats.create({
       model: "gemini-flash-latest",
       history: history,
       config: {
@@ -136,12 +136,10 @@ export async function getWellnessResponse(message: string, history: { role: 'use
 }
 
 export async function analyzeImage(base64Data: string, prompt: string, mimeType: string = "image/jpeg") {
-  if (!apiKey) {
-    throw new Error("Gemini API key is missing.");
-  }
+  const ai = getGenAI();
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [
         {
@@ -167,7 +165,7 @@ export async function analyzeImage(base64Data: string, prompt: string, mimeType:
 }
 
 export async function analyzeSymptoms(symptom: string, duration: string, severity: number, profile: UserProfile) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -200,7 +198,7 @@ export async function analyzeSymptoms(symptom: string, duration: string, severit
   const prompt = `Patient reports: ${symptom}. Duration: ${duration}. Severity: ${severity}/10. Profile: ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}. Analyze these symptoms to provide likely causes, urgency, and clinical guidance. Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -219,7 +217,7 @@ export async function analyzeSymptoms(symptom: string, duration: string, severit
 }
 
 export async function generateSmartMedicationSchedule(profile: UserProfile, additionalInfo?: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -263,7 +261,7 @@ export async function generateSmartMedicationSchedule(profile: UserProfile, addi
   Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -282,7 +280,7 @@ export async function generateSmartMedicationSchedule(profile: UserProfile, addi
 }
 
 export async function analyzeLabReport(base64Data?: string, textContent?: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -317,7 +315,7 @@ export async function analyzeLabReport(base64Data?: string, textContent?: string
     if (textContent) parts.push({ text: `Report text content: ${textContent}` });
     parts.push({ text: prompt });
 
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts }],
       config: {
@@ -336,7 +334,7 @@ export async function analyzeLabReport(base64Data?: string, textContent?: string
 }
 
 export async function analyzeJournal(notes: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -350,7 +348,7 @@ export async function analyzeJournal(notes: string) {
   };
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: `Analyze the following journal entry for mood, stress level, and burnout risk: ${notes}` }] }],
       config: {
@@ -369,7 +367,7 @@ export async function analyzeJournal(notes: string) {
 }
 
 export async function generateHealthRoadmap(profile: UserProfile) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "array",
@@ -388,7 +386,7 @@ export async function generateHealthRoadmap(profile: UserProfile) {
   const prompt = `Based on this user profile: Age: ${profile.age}, Sex: ${profile.sex}, Conditions: ${profile.conditions.join(', ')}. Generate a personalized preventive health roadmap for the next 12 months, suggesting screenings, checkups, and general wellness habits. Return as valid JSON array.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -407,12 +405,12 @@ export async function generateHealthRoadmap(profile: UserProfile) {
 }
 
 export async function generateCallSummary(callTranscript: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const prompt = `Summarize this tele-consultation call into key points: patient concerns, doctor's diagnosis, and prescribed actions/medications. Use Markdown to format the output.\n\nTranscript / Notes:\n${callTranscript}`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -429,7 +427,7 @@ export async function generateCallSummary(callTranscript: string) {
 }
 
 export async function analyzeFood(base64Data: string, profile: UserProfile) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -453,7 +451,7 @@ export async function analyzeFood(base64Data: string, profile: UserProfile) {
   Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ 
         role: "user", 
@@ -478,7 +476,7 @@ export async function analyzeFood(base64Data: string, profile: UserProfile) {
 }
 
 export async function analyzeLockerDocument(base64Data: string, mimeType: string = "image/jpeg") {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -519,7 +517,7 @@ export async function analyzeLockerDocument(base64Data: string, mimeType: string
   Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [
         {
@@ -546,7 +544,7 @@ export async function analyzeLockerDocument(base64Data: string, mimeType: string
 }
 
 export async function generateAppointmentBriefing(journal: JournalEntry[], appointmentType: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const lastEntries = journal.slice(-10); // Look at last 10 entries
   const schema = {
@@ -568,7 +566,7 @@ export async function generateAppointmentBriefing(journal: JournalEntry[], appoi
   Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
@@ -586,7 +584,7 @@ export async function generateAppointmentBriefing(journal: JournalEntry[], appoi
 }
 
 export async function generatePostVisitChecklist(notes: string) {
-  if (!apiKey) throw new Error("Gemini API key is missing.");
+  const ai = getGenAI();
 
   const schema = {
     type: "object",
@@ -614,7 +612,7 @@ export async function generatePostVisitChecklist(notes: string) {
   Return as valid JSON.`;
 
   try {
-    const response = await genAI.models.generateContent({
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {

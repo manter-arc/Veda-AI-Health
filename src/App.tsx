@@ -112,7 +112,8 @@ import {
   ChevronDown,
   FileSearch,
   BookCheck,
-  ListChecks
+  ListChecks,
+  LayoutGrid
 } from 'lucide-react';
 import { cn, formatMsg, formatCurrency, formatCoverage } from './lib/utils';
 import { TrendsInsights } from './components/TrendsInsights';
@@ -1500,7 +1501,7 @@ function AppContent() {
     return (
     <header role="banner" className="sticky top-0 z-50 bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)] px-4 h-[72px] flex items-center justify-between md:px-6">
       <div className="flex items-center gap-4 shrink-0">
-        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2 border border-[var(--border)] rounded-xl md:hidden">
+        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2 border border-[var(--border)] rounded-xl hover:bg-[var(--surface)] transition-colors">
           <Menu size={22} aria-hidden="true" />
         </button>
         <div className="flex items-center gap-3">
@@ -1508,16 +1509,20 @@ function AppContent() {
         </div>
       </div>
 
-      <nav className="hidden md:flex items-center gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-full px-2 py-1.5 shadow-sm mx-4">
-        <HeaderNavItem label="Home" active={mode === 'home'} onClick={() => switchMode('home')} />
-        <HeaderNavItem label="Wellness" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
-        <HeaderNavItem label="Journal" active={mode === 'journal'} onClick={() => switchMode('journal')} />
-        <HeaderNavItem label="Locker" active={mode === 'locker'} onClick={() => switchMode('locker')} />
+      <nav className="hidden lg:flex items-center gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-full px-2 py-1.5 shadow-sm mx-4">
+        <HeaderNavItem label="Home" icon={<Home />} active={mode === 'home'} onClick={() => switchMode('home')} />
+        <HeaderNavItem label="Wellness" icon={<Sparkles />} active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
+        <HeaderNavItem label="Journal" icon={<BookOpen />} active={mode === 'journal'} onClick={() => switchMode('journal')} />
+        <HeaderNavItem label="Locker" icon={<Lock />} active={mode === 'locker'} onClick={() => switchMode('locker')} />
+        <HeaderNavItem label="Explore" icon={<LayoutGrid />} active={showAllPages} onClick={openAllPages} />
       </nav>
 
       <div className="flex items-center gap-2 shrink-0">
-        <button onClick={() => switchMode('chat')} aria-label="Open Health Chat" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] hidden sm:flex items-center justify-center">
+        <button onClick={() => switchMode('chat')} aria-label="Open Health Chat" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] flex items-center justify-center hover:bg-[var(--surface)]">
           <MessageSquare size={22} aria-hidden="true" />
+        </button>
+        <button onClick={() => switchMode('vitals')} aria-label="Health Vitals" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] hidden md:flex items-center justify-center hover:bg-[var(--surface)]">
+          <TrendingUp size={22} aria-hidden="true" />
         </button>
         <button onClick={() => switchMode('alerts')} aria-label={`Open Notifications. ${activeAlertsCount} active alerts`} className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] relative flex items-center justify-center">
           <Bell size={22} aria-hidden="true" />
@@ -1807,6 +1812,7 @@ function AppContent() {
                     journal={journal} 
                     reminders={reminders}
                     activeAlertsCount={activeAlertsCount}
+                    openAllPages={openAllPages}
                   />
                 )}
                 {mode === 'journal' && <JournalView journal={journal} addJournalEntry={addJournalEntry} />}
@@ -2049,18 +2055,20 @@ function QuickActionButton({ icon, label, color, onClick }: { icon: React.ReactN
   );
 }
 
-function HeaderNavItem({ label, active, onClick }: { label: string, active: boolean, onClick: () => void }) {
+function HeaderNavItem({ label, icon, active, onClick }: { label: string, icon: React.ReactNode, active: boolean, onClick: () => void }) {
   return (
     <button 
       onClick={onClick}
       className={cn(
-        "px-6 py-2.5 rounded-full text-xs font-black uppercase tracking-widest transition-all",
+        "px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest transition-all flex items-center gap-2",
         active 
           ? "bg-[var(--teal)] text-[#020617]" 
-          : "text-[var(--text2)] opacity-60 hover:opacity-100"
+          : "text-[var(--text2)] opacity-60 hover:opacity-100 hover:bg-[var(--surface)]"
       )}
     >
-      {label}
+      {React.cloneElement(icon as React.ReactElement<any>, { size: 14 })}
+      <span className="hidden xl:inline">{label}</span>
+      {active && <span className="xl:hidden">{label}</span>}
     </button>
   );
 }
@@ -2183,13 +2191,15 @@ function HomeDashboard({
   profile, 
   journal,
   reminders,
-  activeAlertsCount 
+  activeAlertsCount,
+  openAllPages
 }: { 
   switchMode: (m: AppMode, tab?: any) => void, 
   profile: UserProfile, 
   journal: JournalEntry[],
   reminders: Reminder[],
-  activeAlertsCount: number
+  activeAlertsCount: number,
+  openAllPages: () => void
 }) {
   const score = calculateScore(journal, profile);
   const streak = calculateStreak(journal);
@@ -2393,6 +2403,46 @@ function HomeDashboard({
           </motion.div>
         ))}
       </div>
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.7 }}
+        className="bg-[var(--surface)] border border-[var(--border)] p-6 rounded-[32px] shadow-sm"
+      >
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-1.5 h-6 bg-[var(--teal)] rounded-full" />
+            <h3 className="text-[11px] font-black text-[var(--text)] uppercase tracking-[0.2em]">Medical Services</h3>
+          </div>
+          <button onClick={openAllPages} className="text-[var(--teal)] text-[10px] font-black uppercase tracking-widest hover:opacity-70">See All</button>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+          {[
+            { icon: '👨‍⚕️', label: 'Doctor', mode: 'doctor' },
+            { icon: '🏥', label: 'Hospital', mode: 'hospital' },
+            { icon: '🛡️', label: 'Insurance', mode: 'insurance' },
+            { icon: '🚑', label: 'SOS', mode: 'sos' },
+            { icon: '📋', label: 'Reports', mode: 'records' },
+            { icon: '🩸', label: 'Vitals', mode: 'vitals' },
+            { icon: '📅', label: 'Calendar', mode: 'calendar' },
+            { icon: '🏢', label: 'Corporate', mode: 'corporate' },
+            { icon: '🎓', label: 'Academy', mode: 'edu' },
+            { icon: '🧬', label: 'Advisor', mode: 'advice' },
+            { icon: '⚖️', label: 'BMI', mode: 'bmi' },
+            { icon: '🏬', label: 'Clinic', mode: 'clinic' },
+          ].map((s, i) => (
+            <button 
+              key={s.label}
+              onClick={() => switchMode(s.mode as AppMode)}
+              className="p-4 rounded-2xl bg-[var(--bg)] border border-[var(--border)] flex flex-col items-center gap-2 hover:border-[var(--teal)] transition-all active:scale-95 group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">{s.icon}</span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text2)]">{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </motion.div>
 
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
