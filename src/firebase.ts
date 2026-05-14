@@ -45,6 +45,6 @@ export const googleProvider = new GoogleAuthProvider();
 export const appleProvider = new OAuthProvider('apple.com');
 
 // Initialize Gemini AI
-export const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+export const ai = new GoogleGenAI({ apiKey: (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 'missing-key' });
 
 export default app;

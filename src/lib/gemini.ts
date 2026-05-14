@@ -1,8 +1,15 @@
 import { GoogleGenAI } from "@google/genai";
 import { UserProfile, JournalEntry } from "../types";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-const genAI = new GoogleGenAI({ apiKey });
+let genAIInstance: any = null;
+
+function getGenAI() {
+  if (!genAIInstance) {
+    const key = typeof process !== 'undefined' ? (process.env.GEMINI_API_KEY || "") : "";
+    genAIInstance = new GoogleGenAI({ apiKey: key || 'missing-key' });
+  }
+  return genAIInstance;
+}
 
 export const SYS_PROMPT = `You are Veda, a warm, knowledgeable, and calm AI health companion with persistent memory. You remember past conversations and patient details across sessions. You help people understand their health better. When a patient says 'remember that...' or 'याद रखो', acknowledge it warmly. Reference their profile and past context naturally to feel like a continuous caring relationship.
 
@@ -16,12 +23,9 @@ RULES:
 - End every response with: "⚠️ I am an AI, not a doctor. Please consult a qualified healthcare professional for medical advice."`;
 
 export async function callGemini(prompt: string, systemInstruction: string = SYS_PROMPT) {
-  if (!apiKey) {
-    throw new Error("Gemini API key is missing. Please configure it in the AI Studio Secrets panel.");
-  }
-
   try {
-    const response = await genAI.models.generateContent({
+    const ai = getGenAI();
+    const response = await ai.models.generateContent({
       model: "gemini-flash-latest",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {

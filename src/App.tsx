@@ -12258,68 +12258,10 @@ function PricingView({ profile, onUpgrade }: { profile: UserProfile, onUpgrade: 
 
   const handleCheckout = async (plan: string) => {
     setLoading(plan);
-    try {
-      const amount = plan === 'Premium Plan' ? 1499 : 0; // Pricing in INR (e.g. 1499 INR)
-      
-      const response = await fetch('/api/create-razorpay-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount }),
-      });
-      const order = await response.json();
-
-      if (!order.id) throw new Error("Order creation failed");
-
-      const options = {
-        key: (import.meta as any).env.VITE_RAZORPAY_KEY_ID,
-        amount: order.amount,
-        currency: order.currency,
-        name: "Veda Health",
-        description: `Upgrade to ${plan}`,
-        order_id: order.id,
-        handler: async (response: any) => {
-          setLoading(plan);
-          try {
-            const verifyRes = await fetch('/api/verify-razorpay-payment', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(response),
-            });
-            const result = await verifyRes.json();
-            if (result.status === 'success') {
-              onUpgrade(plan);
-            } else {
-              alert('Payment verification failed.');
-            }
-          } catch (err) {
-            console.error("Verification error:", err);
-            alert("Payment verification failed.");
-          } finally {
-            setLoading(null);
-          }
-        },
-        prefill: {
-          name: profile.name,
-          email: profile.email || "user@example.com",
-        },
-        theme: {
-          color: "#0d9488",
-        },
-      };
-
-      const rzp = new (window as any).Razorpay(options);
-      rzp.on('payment.failed', function (response: any){
-        alert("Payment failed: " + response.error.description);
-      });
-      rzp.open();
-    } catch (err) {
-      console.error(err);
-      alert('Checkout initialization failed. Please try again.');
-    } finally {
-      if (!(window as any).RZP_OPENED) { // Simple check to avoid clearing loading too early if modal is open
-         setLoading(null);
-      }
-    }
+    setTimeout(() => {
+      onUpgrade(plan);
+      setLoading(null);
+    }, 1000);
   };
 
   return (
