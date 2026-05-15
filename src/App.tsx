@@ -121,7 +121,7 @@ import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
-import { auth, db, googleProvider, appleProvider, ai } from './firebase';
+import { auth, db, googleProvider, appleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocFromServer, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { MapContainer, TileLayer, Marker, Popup, useMap as useLeafletMap } from 'react-leaflet';
@@ -2491,11 +2491,9 @@ function WellnessTip({ journal }: { journal: JournalEntry[] }) {
       setIsLoading(true);
       try {
         const lastMood = journal[0]?.mood || 3;
-        const response = await ai.models.generateContent({
-          model: "gemini-flash-latest",
-          contents: `Provide a single, short, inspiring wellness tip (max 15 words) based on a mood of ${lastMood}/5.`,
-        });
-        setTip(response.text || "Drink some water and take a deep breath.");
+        const prompt = `Provide a single, short, inspiring wellness tip (max 15 words) based on a mood of ${lastMood}/5.`;
+        const response = await callGemini(prompt);
+        setTip(response || "Drink some water and take a deep breath.");
       } catch (error) {
         setTip("A short walk can clear your mind and boost your energy.");
       } finally {
@@ -12656,14 +12654,12 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
     setIsLoadingCheckIn(true);
     try {
       const recentEntries = journal.slice(0, 3).map(e => `Mood: ${e.mood}/5, Energy: ${e.energy}/5, Note: ${e.notes}`).join('\n');
-      const response = await ai.models.generateContent({
-        model: "gemini-flash-latest",
-        contents: `Based on my recent health journal entries, provide a short, empathetic mental health check-in and one actionable wellness tip. Keep it under 60 words.
+      const prompt = `Based on my recent health journal entries, provide a short, empathetic mental health check-in and one actionable wellness tip. Keep it under 60 words.
         Recent entries:
         ${recentEntries}
-        Current Mood: ${lastMood}/5`,
-      });
-      setAiCheckIn(response.text || null);
+        Current Mood: ${lastMood}/5`;
+      const response = await callGemini(prompt);
+      setAiCheckIn(response || null);
     } catch (error) {
       console.error("Error fetching AI check-in:", error);
       setAiCheckIn("Take a deep breath. You're doing your best, and that's enough for today.");

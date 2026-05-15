@@ -1,7 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, OAuthProvider } from 'firebase/auth';
 import { doc, getDocFromServer, initializeFirestore, memoryLocalCache } from 'firebase/firestore';
-import { GoogleGenAI } from "@google/genai";
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase
@@ -43,8 +42,5 @@ testConnection();
 
 export const googleProvider = new GoogleAuthProvider();
 export const appleProvider = new OAuthProvider('apple.com');
-
-// Initialize Gemini AI
-export const ai = new GoogleGenAI({ apiKey: (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 'missing-key' });
 
 export default app;
