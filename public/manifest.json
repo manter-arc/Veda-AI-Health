@@ -1,0 +1,16 @@
+{
+  "name": "Veda Health",
+  "short_name": "Veda",
+  "description": "AI-powered health companion for Indian families.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#00d4b1",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTranslation } from 'react-i18next';
@@ -120,7 +120,7 @@ import { TrendsInsights } from './components/TrendsInsights';
 import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
-import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
+import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocFromServer, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
@@ -160,8 +160,11 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const isOffline = errorMessage.toLowerCase().includes('offline') || errorMessage.toLowerCase().includes('unavailable');
+  
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: isOffline ? `${errorMessage}. This often indicates a network restriction in sandboxed environments. We've enabled Force Long Polling to help.` : errorMessage,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -179,7 +182,17 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  
+  // Only throw if it's a critical write error or if we really want to block the UI.
+  // For GET errors, we might want to just log and show a toast.
+  if (operationType === OperationType.WRITE || operationType === OperationType.CREATE) {
+    throw new Error(JSON.stringify(errInfo));
+  } else {
+    console.warn("Non-critical Firestore GET/LIST error ignored for UI stability.", errInfo);
+    if (isOffline) {
+       showErrorToast("Cloud Sync delayed: Your internet or browser might be restricting Firestore. Retrying...");
+    }
+  }
 }
 
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: Error | null}> {
@@ -294,6 +307,37 @@ function AppContent() {
   const [showCart, setShowCart] = useState(false);
   
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const hasSeededAmlodipine = useRef(false);
+  const [activeAlertReminder, setActiveAlertReminder] = useState<Reminder | null>(null);
+  const lastFiredRef = useRef<Record<string, string>>({});
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      // Prevent the mini-infobar from appearing on mobile
+      e.preventDefault();
+      // Stash the event so it can be triggered later.
+      setDeferredPrompt(e);
+      console.log('beforeinstallprompt fired');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    // Show the install prompt
+    deferredPrompt.prompt();
+    // Wait for the user to respond to the prompt
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User response to the install prompt: ${outcome}`);
+    // We've used the prompt, and can't use it again, throw it away
+    setDeferredPrompt(null);
+  };
 
   const addNotification = useCallback((notif: Omit<AppNotification, 'id' | 'timestamp'>) => {
     const id = Math.random().toString(36).substring(7);
@@ -670,6 +714,19 @@ function AppContent() {
     window.scrollTo(0, 0);
   };
 
+  const handleStartChat = () => {
+    if (!activeChatId) {
+      if (conversations.length > 0) {
+        setActiveChatId(conversations[0].id);
+        switchMode('chat');
+      } else {
+        createNewChat();
+      }
+    } else {
+      switchMode('chat');
+    }
+  };
+
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
@@ -804,6 +861,66 @@ function AppContent() {
     }
   };
 
+  // Seed specific user requested reminders
+  useEffect(() => {
+    if (user && isAuthReady && !hasSeededAmlodipine.current) {
+      const amlodipineReminder = {
+        name: 'Amlodipine',
+        dose: '5mg',
+        time: '08:00',
+        freq: 'Daily',
+        color: 'sky',
+        category: 'medicine' as const,
+        on: true
+      };
+
+      // Check if it already exists to avoid duplicates
+      const exists = reminders.some(r => r.name.toLowerCase() === 'amlodipine');
+      if (!exists && isAuthReady) {
+        hasSeededAmlodipine.current = true;
+        addReminder(amlodipineReminder);
+      } else if (exists) {
+        hasSeededAmlodipine.current = true; // Mark as done even if it existed
+      }
+    }
+  }, [user?.uid, isAuthReady, reminders]);
+
+  // Real-time reminder alarm logic
+  useEffect(() => {
+    if (!user || reminders.length === 0) return;
+
+    const checkReminders = () => {
+      const now = new Date();
+      const currentHHMM = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      
+      reminders.forEach(r => {
+        if (!r.on) return;
+        
+        // If time matches AND we haven't fired this for this specific minute already
+        if (r.time === currentHHMM && lastFiredRef.current[r.id] !== currentHHMM) {
+          lastFiredRef.current[r.id] = currentHHMM;
+          setActiveAlertReminder(r);
+          
+          // Also trigger a system notification if enabled
+          triggerPushNotification("Veda Reminder", `Time for your ${r.name} (${r.dose})`);
+          
+          // Optional: Add to notifications list
+          addNotification({
+             title: 'Reminder Alarm',
+             message: `Take ${r.name} - ${r.dose}`,
+             type: 'info',
+             duration: 0 // Keep until dismissed
+          });
+        }
+      });
+    };
+
+    const interval = setInterval(checkReminders, 30000); // Check every 30s
+    checkReminders(); // Initial check
+
+    return () => clearInterval(interval);
+  }, [user, reminders, addNotification]);
+
   const deleteReminder = async (id: any) => {
     if (user) {
       try {
@@ -853,24 +970,24 @@ function AppContent() {
     <div id="landing-page" className="relative min-h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)] transition-colors duration-300">
       <div className="bg-gradient" />
       
-      <nav className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)]">
+      <nav className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all glass-header">
         <div className="max-w-[1100px] mx-auto px-6 flex items-center justify-between">
           <a href="#" className="font-serif text-2xl text-[var(--teal)] flex items-baseline gap-1.5 no-underline">
             Veda <span className="font-sans text-[10px] text-[var(--muted)] font-bold uppercase tracking-[0.2em]">Health</span>
           </a>
           <div className="hidden md:flex items-center gap-2 ml-auto mr-8">
-            <a href="#features" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">Features</a>
-            <a href="#how" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">How it works</a>
-            <a href="#testimonials" className="px-4 py-2 text-[var(--text2)] no-underline text-[13px] font-bold uppercase tracking-wider hover:text-[var(--teal)] transition-all">Reviews</a>
+            <a href="#features" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)]">Features</a>
+            <a href="#how" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2">App</a>
+            <a href="#testimonials" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2">Reviews</a>
           </div>
           <div className="flex items-center gap-4">
             <button 
               onClick={() => setMode('auth')} 
-              className="hidden sm:block px-4 py-2 text-[var(--text2)] font-bold text-[13px] uppercase tracking-wider hover:text-[var(--teal)] transition-all"
+              className="hidden sm:block px-6 py-2 glass-pill text-[var(--text2)] font-black text-[12px] uppercase tracking-wider hover:text-[var(--teal)] transition-all border-none hover:bg-[var(--teal-glow)]"
             >
               Sign In
             </button>
-            <button onClick={handleStart} className="btn-primary">
+            <button onClick={handleStart} className="btn-primary px-8 shadow-xl shadow-[var(--teal)]/20">
               {user ? 'Open App' : 'Get Started'}
             </button>
           </div>
@@ -922,15 +1039,15 @@ function AppContent() {
             transition={{ duration: 0.8, delay: 0.2 }}
           >
             <div className="relative">
-              <div className="w-[280px] bg-[var(--bg)] border border-[var(--border)] rounded-[40px] overflow-hidden shadow-2xl relative">
-                <div className="h-12 bg-[var(--surface)] flex items-center justify-between px-6 text-[10px] text-[var(--muted)] font-black uppercase tracking-widest border-b border-[var(--border)]">
+              <div className="w-[280px] h-[560px] bg-[var(--bg)] border border-[var(--border)] rounded-[40px] overflow-hidden shadow-2xl relative flex flex-col">
+                <div className="h-12 bg-[var(--surface)] flex items-center justify-between px-6 text-[10px] text-[var(--muted)] font-black uppercase tracking-widest border-b border-[var(--border)] shrink-0">
                   <span>9:41</span>
                   <div className="flex gap-1.5 opacity-60">
                     <Watch size={12} />
                     <Zap size={12} />
                   </div>
                 </div>
-                <div className="p-4 space-y-3">
+                <div className="p-5 space-y-4 flex-1">
                   <div className="flex gap-2.5 ai">
                     <div className="p-3 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-[12px] leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
                       Namaste! I'm Veda. How can I help you today?
@@ -940,6 +1057,16 @@ function AppContent() {
                     <div className="p-3 bg-[var(--teal)] text-white dark:text-[#020617] font-bold rounded-2xl rounded-tr-sm text-[12px] leading-relaxed max-w-[85%] shadow-md">
                       I have a headache since morning
                     </div>
+                  </div>
+                  <div className="flex gap-2.5 ai">
+                    <div className="p-3 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-[12px] leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
+                      I'm sorry to hear that. Is the pain sharp or dull?
+                    </div>
+                  </div>
+                </div>
+                <div className="p-4 border-t border-[var(--border)] bg-[var(--surface)] shrink-0">
+                  <div className="w-full h-8 rounded-full bg-[var(--bg)] border border-[var(--border)] flex items-center px-4">
+                    <div className="w-1 h-3 bg-[var(--teal)] rounded-full animate-pulse" />
                   </div>
                 </div>
               </div>
@@ -1309,31 +1436,33 @@ function AppContent() {
             exit={{ opacity: 0 }}
             onClick={closeSidebar}
             aria-hidden="true"
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[300]"
+            className="fixed inset-0 bg-black/40 backdrop-blur-md z-[300]"
           />
           <motion.div 
-            initial={{ x: '-100%', opacity: 0.5 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: '-100%', opacity: 0.5 }}
+            initial={{ x: '-100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '-100%' }}
             role="navigation"
             aria-label="Side menu"
-            transition={{ type: 'spring', damping: 25, stiffness: 200, opacity: { duration: 0.2 } }}
-            className="fixed top-0 left-0 bottom-0 w-[280px] sm:w-[320px] glass-darker z-[301] flex flex-col shadow-2xl"
+            transition={{ type: 'spring', damping: 28, stiffness: 220 }}
+            className="fixed top-0 left-0 bottom-0 w-[280px] sm:w-[320px] glass z-[301] flex flex-col shadow-2xl rounded-r-[32px] overflow-hidden"
           >
             {/* Sidebar Branding & Profile */}
-            <div className="p-6 border-b border-white/5">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg shadow-[var(--teal)]/20">
-                  <Stethoscope size={16} />
+            <div className="p-8 border-b border-[var(--border)] overflow-hidden relative">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--teal-glow)] rounded-full -translate-y-16 translate-x-16 blur-3xl opacity-50" />
+              <div className="flex items-center gap-3 mb-8 relative z-10">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] shadow-lg shadow-[var(--teal)]/10">
+                  <Stethoscope size={20} />
                 </div>
                 <div>
-                  <h1 className="font-serif text-lg text-[var(--text)] tracking-tight leading-none">Veda</h1>
+                  <h1 className="font-serif text-2xl text-[var(--text)] tracking-tight leading-none">Veda</h1>
+                  <p className="text-[10px] text-[var(--teal)] font-black uppercase tracking-[0.2em] mt-1 opacity-70">Premium AI</p>
                 </div>
               </div>
 
               {user ? (
-                <div className="p-3 rounded-2xl glass border border-white/10 flex items-center gap-2 shadow-sm cursor-pointer" onClick={() => switchMode('profile')}>
-                  <div className="w-8 h-8 rounded-xl glass-morphism border border-white/5 flex items-center justify-center text-[var(--teal)] font-bold text-xs">
+                <div className="p-3 rounded-2xl glass border border-[var(--border)] flex items-center gap-2 shadow-sm cursor-pointer" onClick={() => switchMode('profile')}>
+                  <div className="w-8 h-8 rounded-xl glass border border-[var(--border)] flex items-center justify-center text-[var(--teal)] font-bold text-xs">
                     {(profile.name || user.displayName || 'U')[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -1341,8 +1470,8 @@ function AppContent() {
                   </div>
                 </div>
               ) : (
-                <div className="p-4 rounded-3xl glass-morphism border border-white/10 border-dashed flex items-center gap-3 mb-2 opacity-60">
-                  <div className="w-10 h-10 rounded-2xl glass border border-white/10 flex items-center justify-center text-[var(--muted)]">
+                <div className="p-4 rounded-3xl glass border border-[var(--border)] border-dashed flex items-center gap-3 mb-2 opacity-60">
+                  <div className="w-10 h-10 rounded-2xl glass border border-[var(--border)] flex items-center justify-center text-[var(--muted)]">
                     <Bot size={20} />
                   </div>
                   <div className="flex-1">
@@ -1499,9 +1628,9 @@ function AppContent() {
   const renderHeader = () => {
     if (mode === 'chat') return null;
     return (
-    <header role="banner" className="sticky top-0 z-50 bg-[var(--bg)]/80 backdrop-blur-xl border-b border-[var(--border)] px-4 h-[72px] flex items-center justify-between md:px-6">
+    <header role="banner" className="sticky top-0 z-50 glass-header px-4 h-[72px] flex items-center justify-between md:px-6">
       <div className="flex items-center gap-4 shrink-0">
-        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2 border border-[var(--border)] rounded-xl hover:bg-[var(--surface)] transition-colors">
+        <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2.5 glass-pill hover:bg-[var(--surface)] transition-all active:scale-95">
           <Menu size={22} aria-hidden="true" />
         </button>
         <div className="flex items-center gap-3">
@@ -1509,7 +1638,7 @@ function AppContent() {
         </div>
       </div>
 
-      <nav className="hidden lg:flex items-center gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-full px-2 py-1.5 shadow-sm mx-4">
+      <nav className="hidden lg:flex items-center gap-1 glass-pill px-2 py-1.5 shadow-sm mx-4">
         <HeaderNavItem label="Home" icon={<Home />} active={mode === 'home'} onClick={() => switchMode('home')} />
         <HeaderNavItem label="Wellness" icon={<Sparkles />} active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
         <HeaderNavItem label="Journal" icon={<BookOpen />} active={mode === 'journal'} onClick={() => switchMode('journal')} />
@@ -1518,31 +1647,31 @@ function AppContent() {
       </nav>
 
       <div className="flex items-center gap-2 shrink-0">
-        <button onClick={() => switchMode('chat')} aria-label="Open Health Chat" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] flex items-center justify-center hover:bg-[var(--surface)]">
+        <button onClick={handleStartChat} aria-label="Open Health Chat" className="p-2.5 glass-pill transition-all active:scale-95 text-[var(--text2)] flex items-center justify-center">
           <MessageSquare size={22} aria-hidden="true" />
         </button>
-        <button onClick={() => switchMode('vitals')} aria-label="Health Vitals" className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] hidden md:flex items-center justify-center hover:bg-[var(--surface)]">
+        <button onClick={() => switchMode('vitals')} aria-label="Health Vitals" className="p-2.5 glass-pill transition-all active:scale-95 text-[var(--text2)] hidden md:flex items-center justify-center">
           <TrendingUp size={22} aria-hidden="true" />
         </button>
-        <button onClick={() => switchMode('alerts')} aria-label={`Open Notifications. ${activeAlertsCount} active alerts`} className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] relative flex items-center justify-center">
+        <button onClick={() => switchMode('alerts')} aria-label={`Open Notifications. ${activeAlertsCount} active alerts`} className="p-2.5 glass-pill transition-all active:scale-95 text-[var(--text2)] relative flex items-center justify-center">
           <Bell size={22} aria-hidden="true" />
-          {activeAlertsCount > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[var(--bg)]" />}
+          {activeAlertsCount > 0 && <span className="absolute top-2.5 right-2.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[var(--bg)]" />}
         </button>
         <button 
           onClick={() => { switchMode('medicine'); setShowCart(true); }} 
           aria-label={`Open Cart. ${cart.reduce((acc, item) => acc + item.qty, 0)} items`} 
-          className="p-2.5 border border-[var(--border)] rounded-xl transition-colors text-[var(--text2)] relative flex items-center justify-center"
+          className="p-2.5 glass-pill transition-all active:scale-95 text-[var(--text2)] relative flex items-center justify-center"
         >
           <ShoppingCart size={22} aria-hidden="true" />
           {cart.length > 0 && (
-            <span className="absolute top-2 right-2 min-w-[16px] h-4 bg-[var(--teal)] text-[#020617] text-[10px] flex items-center justify-center rounded-full font-black px-1 border border-[var(--bg)]">
+            <span className="absolute top-2.5 right-2.5 min-w-[16px] h-4 bg-[var(--teal)] text-[#020617] text-[10px] flex items-center justify-center rounded-full font-black px-1 border border-[var(--bg)]">
               {cart.reduce((acc, item) => acc + item.qty, 0)}
             </span>
           )}
         </button>
         <div className="w-px h-6 bg-[var(--border)] mx-1" aria-hidden="true" />
-        <button onClick={() => switchMode('profile')} className="flex items-center gap-2 p-1 rounded-full border border-[var(--border)] bg-[var(--surface)] hover:border-[var(--teal)] transition-all">
-          <div className="w-8 h-8 rounded-full bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center text-[var(--teal)] font-black text-xs" aria-hidden="true">
+        <button onClick={() => switchMode('profile')} className="flex items-center gap-2 p-1 rounded-full glass border-none hover:ring-2 hover:ring-[var(--teal)] transition-all">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] flex items-center justify-center text-[#020f0c] font-black text-xs shadow-inner" aria-hidden="true">
             {(profile.name || user?.displayName || 'G')[0].toUpperCase()}
           </div>
         </button>
@@ -1554,19 +1683,19 @@ function AppContent() {
   const renderBottomNav = () => {
     if (mode === 'chat') return null;
     return (
-    <nav role="navigation" aria-label="Mobile bottom navigation" className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] px-4 pb-safe md:hidden">
+    <nav role="navigation" aria-label="Mobile bottom navigation" className="fixed bottom-0 left-0 right-0 z-50 glass-nav px-4 pb-safe md:hidden">
       <div className="flex items-center justify-around h-[72px]">
         <BottomNavItem icon={<TrendingUp size={22} />} label="Home" active={mode === 'home'} onClick={() => switchMode('home')} />
         <BottomNavItem icon={<Wind size={22} />} label="Wellness" active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
-        <div className="flex-1 flex flex-col items-center -mt-8">
-          <button onClick={() => switchMode('chat')} aria-label="Ask Veda AI" className="w-14 h-14 rounded-full bg-[var(--teal)] flex items-center justify-center text-[#020617] shadow-lg shadow-[var(--teal)]/20 active:scale-95 transition-transform border border-[var(--bg)]">
-            <MessageSquare size={26} aria-hidden="true" />
+        <div className="flex-1 flex flex-col items-center -mt-10">
+          <button onClick={handleStartChat} aria-label="Ask Veda AI" className="w-16 h-16 rounded-3xl bg-[var(--teal)] flex items-center justify-center text-[#020617] shadow-xl shadow-[var(--teal)]/30 active:scale-90 transition-all border-4 border-transparent hover:ring-4 hover:ring-[var(--teal)]/20">
+            <MessageSquare size={28} aria-hidden="true" />
           </button>
         </div>
         <BottomNavItem icon={<BookOpen size={22} />} label="Journal" active={mode === 'journal'} onClick={() => switchMode('journal')} />
-        <button onClick={openAllPages} className="flex-1 flex flex-col items-center gap-1 text-[var(--muted)] opacity-60">
+        <button onClick={openAllPages} className="flex-1 flex flex-col items-center gap-1 text-[var(--muted)] opacity-80 hover:text-[var(--teal)] transition-colors">
           <Menu size={22} aria-hidden="true" />
-          <span className="text-[10px] font-black uppercase tracking-widest">More</span>
+          <span className="text-[9px] font-black uppercase tracking-[0.15em]">More</span>
         </button>
       </div>
     </nav>
@@ -1737,8 +1866,59 @@ function AppContent() {
     }
   };
 
+  const renderAlarmOverlay = () => (
+    <AnimatePresence>
+      {activeAlertReminder && (
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center p-6 bg-black/60 backdrop-blur-md">
+          <motion.div 
+            initial={{ scale: 0.8, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.8, opacity: 0, y: 20 }}
+            className={cn(
+              "w-full max-w-sm glass border-2 p-8 rounded-[40px] text-center shadow-2xl relative overflow-hidden",
+              activeAlertReminder.color === 'sky' ? "border-sky-500/40" : "border-[var(--teal)]/40"
+            )}
+          >
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-[var(--teal)] to-transparent animate-pulse" />
+            
+            <div className="w-20 h-20 rounded-full bg-[var(--teal-glow)] border border-[var(--teal-line)] flex items-center justify-center mx-auto mb-6 relative">
+               <div className="absolute inset-0 rounded-full bg-[var(--teal)] opacity-20 animate-ping" />
+               <Clock className="text-[var(--teal)]" size={32} />
+            </div>
+
+            <h3 className="font-serif text-2xl text-[var(--text)] mb-2">Medication Time</h3>
+            <p className="text-[var(--text2)] mb-1">It's time for your dose of</p>
+            <div className="text-3xl font-black text-[var(--teal)] mb-1 uppercase tracking-tight">{activeAlertReminder.name}</div>
+            <div className="inline-block px-4 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-full text-sm font-bold text-[var(--muted)] mb-8">
+              {activeAlertReminder.dose} • {activeAlertReminder.time}
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={() => setActiveAlertReminder(null)} 
+                className="w-full py-4 bg-[var(--teal)] text-[#020f0c] font-black rounded-2xl shadow-xl shadow-[var(--teal)]/20 hover:brightness-110 active:scale-95 transition-all"
+              >
+                I've Taken It
+              </button>
+              <button 
+                onClick={() => {
+                    setActiveAlertReminder(null);
+                    showDoneToast("Snoozed for 5 minutes");
+                }}
+                className="w-full py-4 bg-[var(--card)] border border-[var(--border)] text-[var(--text2)] font-bold rounded-2xl hover:bg-[var(--surface)] transition-all"
+              >
+                Snooze
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+
   if (mode === 'landing') return (
     <>
+      {renderAlarmOverlay()}
       {renderLanding()}
     </>
   );
@@ -1756,6 +1936,8 @@ function AppContent() {
           notifications={notifications} 
           onDismiss={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} 
         />
+
+        {renderAlarmOverlay()}
 
         {/* Offline Indicator */}
         <AnimatePresence>
@@ -1886,6 +2068,8 @@ function AppContent() {
                     setNotificationPermission={setNotificationPermission}
                     requestNotificationPermission={requestNotificationPermission}
                     onDeleteAccount={handleDeleteAccount}
+                    deferredPrompt={deferredPrompt}
+                    onInstallApp={handleInstallClick}
                   />
                 )}
               </motion.div>
@@ -1906,7 +2090,7 @@ function AppContent() {
               >
                 <QuickActionButton icon={<BookOpen size={20} />} label="Log Journal" color="bg-indigo-500" onClick={() => { switchMode('journal'); setShowQuickActions(false); }} />
                 <QuickActionButton icon={<Activity size={20} />} label="Check Symptoms" color="bg-rose-500" onClick={() => { switchMode('symptoms'); setShowQuickActions(false); }} />
-                <QuickActionButton icon={<MessageSquare size={20} />} label="Ask Veda" color="bg-[var(--teal)]" onClick={() => { switchMode('chat'); setShowQuickActions(false); }} />
+                <QuickActionButton icon={<MessageSquare size={20} />} label="Ask Veda" color="bg-[var(--teal)]" onClick={() => { handleStartChat(); setShowQuickActions(false); }} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1932,29 +2116,29 @@ function AppContent() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowAllPages(false)}
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150]"
+              className="fixed inset-0 bg-black/40 backdrop-blur-md z-[150]"
             />
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed bottom-0 left-0 right-0 z-[160] bg-[var(--bg)] rounded-t-3xl border-t border-[var(--border)] max-h-[85vh] overflow-y-auto"
+              transition={{ type: 'spring', damping: 28, stiffness: 220 }}
+              className="fixed bottom-0 left-0 right-0 z-[160] glass rounded-t-[40px] max-h-[85vh] overflow-y-auto shadow-2xl"
             >
-              <div className="flex justify-center pt-3 pb-1 sticky top-0 bg-[var(--bg)] z-10">
-                <div className="w-10 h-1 bg-[var(--border)] rounded-full" />
+              <div className="flex justify-center pt-4 pb-2 sticky top-0 z-10">
+                <div className="w-12 h-1.5 bg-[var(--border)] rounded-full opacity-50" />
               </div>
-              <div className="flex items-center justify-between px-5 py-3 sticky top-4 bg-[var(--bg)] z-10">
-                <h2 className="font-serif text-2xl text-[var(--text)]">All Features</h2>
-          <button 
+              <div className="flex items-center justify-between px-6 py-4 sticky top-6 z-10">
+                <h2 className="font-serif text-3xl text-[var(--text)] tracking-tight">Explore Veda</h2>
+                <button 
                   onClick={() => setShowAllPages(false)}
                   aria-label="Close All Features Menu"
-                  className="w-12 h-12 rounded-full bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-[var(--text2)] hover:bg-[var(--card2)] transition-colors"
+                  className="w-12 h-12 glass-pill flex items-center justify-center text-[var(--text2)] transition-all active:scale-95 shadow-sm"
                 >
                   <X size={24} aria-hidden="true" />
                 </button>
               </div>
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 p-4 pb-12">
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3.5 p-6 pb-16">
                 {ALL_PAGES.map((p) => (
                   <button
                     key={p.mode}
@@ -1962,10 +2146,12 @@ function AppContent() {
                       switchMode(p.mode as AppMode);
                       setShowAllPages(false);
                     }}
-                    className="flex flex-col items-center gap-2 p-3 sm:p-4 bg-[var(--card)] border border-[var(--border)] rounded-2xl transition-all active:scale-95 hover:bg-[var(--card2)] hover:border-[var(--teal-line)]"
+                    className="flex flex-col items-center gap-3 p-4 glass rounded-[28px] transition-all active:scale-95 hover:border-[var(--teal)]/40 hover:shadow-lg group"
                   >
-                    <span className="text-2xl sm:text-3xl leading-none">{p.icon}</span>
-                    <span className="text-xs sm:text-sm font-bold text-[var(--text2)] text-center leading-tight">
+                    <div className="w-14 h-14 rounded-2xl bg-[var(--surface)] flex items-center justify-center shadow-inner group-hover:bg-[var(--teal-glow)] transition-colors">
+                      <span className="text-3xl leading-none">{p.icon}</span>
+                    </div>
+                    <span className="text-[11px] font-black uppercase tracking-wider text-[var(--text2)] text-center leading-tight opacity-80">
                       {p.label}
                     </span>
                   </button>
@@ -2073,50 +2259,66 @@ function HeaderNavItem({ label, icon, active, onClick }: { label: string, icon: 
   );
 }
 
-function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
+const SidebarItem = memo(function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
   return (
     <motion.button 
-      whileHover={{ x: 4 }}
-      whileTap={{ scale: 0.98 }}
+      whileHover={{ x: 6 }}
+      whileTap={{ scale: 0.96 }}
       onClick={onClick} 
       className={cn(
-        "w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all text-sm font-black uppercase tracking-widest border border-transparent group relative overflow-hidden",
+        "w-full flex items-center gap-4 px-6 py-4.5 rounded-[24px] transition-all text-[12px] font-black uppercase tracking-[0.1em] border border-transparent group relative overflow-hidden",
         active 
-          ? "bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]" 
-          : "text-[var(--text2)] opacity-60 hover:opacity-100 hover:bg-[var(--surface)]"
+          ? "glass shadow-md text-[var(--teal)] border-[var(--teal)]/20" 
+          : "text-[var(--text2)] opacity-60 hover:opacity-100 hover:glass"
       )}
     >
+      {active && (
+        <motion.div 
+          layoutId="sidebar-active"
+          className="absolute inset-0 bg-gradient-to-r from-[var(--teal)]/5 to-transparent z-0"
+        />
+      )}
       <div className={cn(
-        "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-300",
+        "w-10 h-10 rounded-2xl flex items-center justify-center transition-all duration-500 relative z-10",
         active 
-          ? "bg-[var(--teal)] text-[#020617]" 
-          : "bg-[var(--surface)] border border-[var(--border)]"
+          ? "bg-[var(--teal)] text-[#020617] shadow-[0_0_20px_rgba(0,212,177,0.3)]" 
+          : "bg-[var(--surface)] border border-[var(--border)] group-hover:scale-110"
       )}>
-        {React.cloneElement(icon as React.ReactElement<any>, { size: 16 })}
+        {React.cloneElement(icon as React.ReactElement<any>, { size: 18 })}
       </div>
-      {label}
+      <span className="relative z-10">{label}</span>
     </motion.button>
   );
-}
+});
 
-function BottomNavItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
+const BottomNavItem = memo(function BottomNavItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
   return (
     <motion.button 
-      whileTap={{ scale: 0.9 }}
+      whileTap={{ scale: 0.85 }}
       onClick={onClick} 
-      className={cn("flex-1 flex flex-col items-center justify-center gap-1 transition-colors min-h-[44px] min-w-[44px]", active ? "text-[var(--teal)]" : "text-[var(--muted)]")}
+      className={cn("flex-1 flex flex-col items-center justify-center gap-1.5 transition-all group min-h-[50px]", active ? "text-[var(--teal)]" : "text-[var(--muted)]")}
     >
       <motion.div
-        animate={active ? { y: -2, scale: 1.1 } : { y: 0, scale: 1 }}
+        animate={active ? { y: -3, scale: 1.15 } : { y: 0, scale: 1 }}
+        className={cn(
+          "w-11 h-11 rounded-2xl flex items-center justify-center transition-all",
+          active ? "bg-[var(--teal)]/10 shadow-[inner] shadow-[var(--teal)]/5" : "group-hover:bg-[var(--surface)]"
+        )}
       >
-        {icon}
+        {React.cloneElement(icon as React.ReactElement<any>, { size: 24, strokeWidth: active ? 2.5 : 2 })}
       </motion.div>
-      <span className="text-[10px] font-bold">{label}</span>
+      <span className={cn("text-[9px] font-black uppercase tracking-[0.1em]", active ? "opacity-100" : "opacity-40")}>{label}</span>
+      {active && (
+        <motion.div 
+          layoutId="bottom-indicator"
+          className="absolute bottom-1 w-1 h-1 rounded-full bg-[var(--teal)] shadow-[0_0_5px_var(--teal)]"
+        />
+      )}
     </motion.button>
   );
-}
+});
 
-function AIDailyInsight({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
+const AIDailyInsight = memo(function AIDailyInsight({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
   const [insight, setInsight] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
@@ -2157,26 +2359,26 @@ function AIDailyInsight({ journal, profile }: { journal: JournalEntry[], profile
 
   return (
     <motion.div 
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="glass border border-white/10 rounded-3xl p-5 relative overflow-hidden group"
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="glass rounded-[32px] p-6 relative overflow-hidden group shadow-xl"
     >
-      <div className="absolute top-0 right-0 p-3 opacity-5 group-hover:opacity-10 transition-opacity">
-        <Sparkles size={40} className="text-indigo-400" />
+      <div className="absolute top-0 right-0 p-4 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity rotate-12">
+        <Sparkles size={80} className="text-indigo-600" />
       </div>
-      <div className="flex gap-4 items-center relative z-10">
-        <div className="w-10 h-10 rounded-xl glass-morphism border border-white/10 text-indigo-400 flex items-center justify-center shrink-0 shadow-lg">
-          <Bot size={20} />
+      <div className="flex gap-5 items-center relative z-10">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 shadow-lg group-hover:scale-110 transition-transform">
+          <Bot size={32} />
         </div>
         <div className="space-y-1">
-          <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Personal AI Guide</h4>
+          <h4 className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1">Veda Insight</h4>
           {loading ? (
-            <div className="space-y-1.5 animate-pulse">
-              <div className="h-2 glass-morphism rounded w-48" />
-              <div className="h-2 glass-morphism rounded w-32" />
+            <div className="space-y-2 animate-pulse">
+              <div className="h-2.5 glass w-56 opacity-20" />
+              <div className="h-2.5 glass w-40 opacity-10" />
             </div>
           ) : (
-            <p className="text-[11px] font-medium text-[var(--text)] leading-relaxed italic pr-8">
+            <p className="text-[14px] font-serif text-[var(--text)] leading-relaxed italic pr-12 opacity-90">
               "{insight}"
             </p>
           )}
@@ -2184,9 +2386,9 @@ function AIDailyInsight({ journal, profile }: { journal: JournalEntry[], profile
       </div>
     </motion.div>
   );
-}
+});
 
-function HomeDashboard({ 
+const HomeDashboard = memo(function HomeDashboard({ 
   switchMode, 
   profile, 
   journal,
@@ -2220,18 +2422,18 @@ function HomeDashboard({
           <p className="text-sm text-[var(--muted)] font-medium opacity-80">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-1.5 px-2 py-1 bg-[var(--card)] border border-[var(--border)] rounded-full mb-1">
-            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-            <span className="text-[8px] font-black uppercase tracking-widest text-[var(--muted)]">2.4k Online</span>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 glass-pill mb-1">
+            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+            <span className="text-[9px] font-black uppercase tracking-[0.15em] text-[var(--text2)]">Live Network</span>
           </div>
           <motion.div 
-            whileHover={{ scale: 1.05 }}
+            whileHover={{ scale: 1.05, y: -2 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => switchMode('journal')}
-            className="flex items-center gap-2 px-4 py-2 bg-[var(--teal)] text-[#020f0c] rounded-2xl cursor-pointer shadow-lg shadow-[var(--teal)]/20"
+            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-orange-400 to-[var(--amber)] text-white rounded-2xl cursor-pointer shadow-lg shadow-orange-500/20"
           >
             <Flame size={16} />
-            <span className="text-xs font-bold">{streak} Day Streak</span>
+            <span className="text-xs font-black uppercase tracking-wider">{streak} Day Streak</span>
           </motion.div>
         </div>
       </div>
@@ -2243,72 +2445,82 @@ function HomeDashboard({
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
           onClick={() => switchMode('alerts')}
-          className="w-full p-4 glass-morphism border border-red-500/30 rounded-2xl flex items-center justify-between group overflow-hidden relative"
+          className="w-full p-6 glass border border-red-500/20 rounded-[32px] flex items-center justify-between group overflow-hidden relative shadow-lg hover:shadow-xl transition-all active:scale-[0.98]"
         >
-          <div className="absolute top-0 right-0 w-24 h-24 bg-red-400/5 -rotate-45 translate-x-12 -translate-y-12 rounded-full" />
-          <div className="flex items-center gap-3 relative z-10">
-            <div className="w-8 h-8 rounded-lg bg-red-500 text-white flex items-center justify-center animate-pulse shadow-lg shadow-red-500/20"><Bell size={16} /></div>
-            <div className="text-left">
-              <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Active Alerts</span>
-              <p className="text-sm font-bold text-[var(--text)]">You have {activeAlertsCount} health alerts pending</p>
+          <div className="absolute top-0 right-0 w-32 h-32 bg-red-400/5 -rotate-45 translate-x-16 -translate-y-16 rounded-full blur-2xl group-hover:scale-150 transition-transform" />
+          <div className="flex items-center gap-5 relative z-10">
+            <div className="w-12 h-12 rounded-2xl bg-red-500 text-white flex items-center justify-center animate-pulse shadow-xl shadow-red-500/30"><Bell size={20} /></div>
+            <div className="text-left space-y-0.5">
+              <span className="text-[10px] font-black text-red-500 uppercase tracking-[0.2em]">Urgent Protocol</span>
+              <p className="text-sm font-black text-[var(--text)]">You have {activeAlertsCount} pending health alerts</p>
             </div>
           </div>
-          <ChevronRight size={18} className="text-red-500 group-hover:translate-x-1 transition-transform" />
+          <div className="glass-pill p-2 group-hover:translate-x-1 transition-transform">
+            <ChevronRight size={18} className="text-red-500" />
+          </div>
         </motion.button>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <motion.div 
           whileTap={{ scale: 0.98 }}
           onClick={() => switchMode('score')}
-          className="bg-[var(--surface)] border border-[var(--border)] rounded-[32px] p-6 shadow-sm cursor-pointer hover:border-[var(--teal)]/40 transition-all flex items-center justify-between group"
+          className="glass rounded-[32px] p-7 shadow-sm cursor-pointer hover:border-[var(--teal)]/40 hover:shadow-xl transition-all flex items-center justify-between group"
         >
           <div className="space-y-1 relative z-10">
-            <h2 className="text-[11px] font-black text-[var(--teal)] uppercase tracking-[0.2em]">Health Score</h2>
-            <div className="text-4xl font-serif text-[var(--text)] tracking-tighter">{score > 0 ? score : '--'}</div>
-            <p className="text-[11px] font-bold text-[var(--text2)] opacity-60 uppercase tracking-wider flex items-center gap-2">
-              <span className={cn("w-1.5 h-1.5 rounded-full", score === 0 ? "bg-[var(--muted)]" : score >= 80 ? "bg-[var(--teal)]" : score >= 60 ? "bg-blue-400" : "bg-amber-400")} />
-              {score === 0 ? 'Analyzing' : score >= 80 ? 'Excellent' : 'Stable'}
+            <h2 className="text-[11px] font-black text-[var(--teal)] uppercase tracking-[0.2em]">Veda Score</h2>
+            <div className="text-5xl font-serif text-[var(--text)] tracking-tighter">{score > 0 ? score : '--'}</div>
+            <p className="text-[10px] font-bold text-[var(--text2)] opacity-80 uppercase tracking-widest flex items-center gap-2 mt-1">
+              <span className={cn("w-2 h-2 rounded-full shadow-lg", score === 0 ? "bg-[var(--muted)]" : score >= 80 ? "bg-[var(--teal)] shadow-[var(--teal)]/20" : score >= 60 ? "bg-blue-400" : "bg-amber-400")} />
+              {score === 0 ? 'Analyzing' : score >= 80 ? 'Exceptional' : 'Maintaining'}
             </p>
           </div>
-          <div className="w-16 h-16 relative">
+          <div className="w-20 h-20 relative">
             <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-              <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="4" />
+              <circle cx="50" cy="50" r="42" fill="none" stroke="var(--border)" strokeWidth="4" />
               <motion.circle 
-                cx="50" cy="50" r="45" fill="none" stroke={score === 0 ? "var(--muted)" : "var(--teal)"} strokeWidth="6" 
-                strokeDasharray="283" 
-                initial={{ strokeDashoffset: 283 }}
-                animate={{ strokeDashoffset: 283 - (283 * (score > 0 ? score : 0) / 100) }}
+                cx="50" cy="50" r="42" fill="none" stroke={score === 0 ? "var(--muted)" : "var(--teal)"} strokeWidth="8" 
+                strokeDasharray="264" 
+                initial={{ strokeDashoffset: 264 }}
+                animate={{ strokeDashoffset: 264 - (264 * (score > 0 ? score : 0) / 100) }}
                 strokeLinecap="round"
+                className="drop-shadow-[0_0_8px_var(--teal)]"
               />
             </svg>
           </div>
         </motion.div>
 
         <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="bg-[var(--surface)] border border-[var(--border)] p-6 rounded-[32px] shadow-sm overflow-hidden"
+          className="glass p-7 rounded-[32px] shadow-sm overflow-hidden"
         >
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-5">
             <div className="flex items-center gap-2">
-              <div className="w-1 h-3 bg-blue-500 rounded-full" />
-              <span className="text-[11px] font-black text-[var(--muted)] uppercase tracking-[0.2em]">Energy Trend</span>
+              <div className="w-1.5 h-4 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.4)]" />
+              <span className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em]">Energy Flow</span>
             </div>
-            <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">7 Days</p>
+            <p className="text-[9px] font-black text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">7D Trends</p>
           </div>
-          <div className="h-16 w-full">
+          <div className="h-20 w-full">
             {journal.length > 1 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={[...journal].reverse().slice(-7)}>
+                  <defs>
+                    <linearGradient id="colorEnergy" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
                   <Area 
                     type="monotone" 
                     dataKey="energy" 
                     stroke="#3b82f6" 
-                    strokeWidth={2.5}
-                    fillOpacity={0.05} 
-                    fill="#3b82f6" 
+                    strokeWidth={3}
+                    fillOpacity={1} 
+                    fill="url(#colorEnergy)" 
+                    animationDuration={2000}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -2480,7 +2692,7 @@ function HomeDashboard({
       <WellnessTip journal={journal} />
     </motion.div>
   );
-}
+});
 
 function WellnessTip({ journal }: { journal: JournalEntry[] }) {
   const [tip, setTip] = useState<string | null>(null);
@@ -2509,15 +2721,16 @@ function WellnessTip({ journal }: { journal: JournalEntry[] }) {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 1.2 }}
-      className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 rounded-2xl p-5 flex items-center gap-4"
+      className="glass rounded-3xl p-6 flex items-center gap-5 relative overflow-hidden group shadow-2xl"
     >
-      <div className="w-12 h-12 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0">
-        <Lightbulb size={24} />
+      <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--purple)]/5 -translate-y-16 translate-x-16 rounded-full blur-3xl transition-all group-hover:scale-150" />
+      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--blue)] to-[var(--purple)] flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-500/20 group-hover:rotate-6 transition-transform">
+        <Lightbulb size={28} />
       </div>
-      <div className="space-y-1">
-        <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Wellness Tip</span>
-        <p className="text-sm font-medium leading-tight italic">
-          {isLoading ? "Thinking..." : `"${tip}"`}
+      <div className="space-y-1 relative z-10">
+        <span className="text-[10px] font-black text-[var(--teal)] uppercase tracking-[0.2em] opacity-80">Personal Insight</span>
+        <p className="text-[15px] font-serif leading-relaxed text-[var(--text)] italic opacity-90">
+          {isLoading ? "Veda is analyzing your patterns..." : `"${tip}"`}
         </p>
       </div>
     </motion.div>
@@ -2535,23 +2748,26 @@ function InsightRow({ icon, text }: { icon: React.ReactNode, text: string }) {
 function VitalCard({ icon, label, value, unit, color, isPlaceholder, onClick }: { icon: React.ReactNode, label: string, value: string, unit: string, color: string, isPlaceholder?: boolean, onClick?: () => void }) {
   return (
     <motion.div 
-      whileHover={{ y: -4 }}
+      whileHover={{ y: -4, boxShadow: "0 12px 24px rgba(0,0,0,0.05)" }}
       whileTap={{ scale: 0.96 }}
       onClick={onClick}
       className={cn(
-        "p-5 rounded-[32px] bg-[var(--surface)] border border-[var(--border)] transition-all cursor-pointer shadow-sm h-full group",
+        "p-6 rounded-[32px] glass transition-all cursor-pointer shadow-sm h-full group flex flex-col justify-between",
         !isPlaceholder && "hover:border-[var(--teal)]/40"
       )}
     >
-      <div className="flex items-center gap-3 mb-4">
-        <div className="p-2.5 rounded-2xl bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center transition-transform group-hover:scale-105">
+      <div className="flex items-center justify-between mb-4">
+        <div className="p-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center transition-transform group-hover:scale-110 shadow-inner">
           {icon}
         </div>
-        <span className="text-[11px] font-black text-[var(--muted)] uppercase tracking-widest opacity-60">{label}</span>
+        <div className="w-6 h-1 bg-[var(--border)] rounded-full opacity-30" />
       </div>
-      <div className="flex items-baseline gap-1.5">
-        <span className={cn("text-3xl font-serif tracking-tight", isPlaceholder ? "text-[var(--muted)]" : "text-[var(--text)]")}>{value}</span>
-        {unit && <span className="text-[11px] font-bold text-[var(--muted)] uppercase opacity-40">{unit}</span>}
+      <div>
+        <p className="text-[10px] font-black text-[var(--muted)] uppercase tracking-[0.15em] mb-1.5 opacity-80">{label}</p>
+        <div className="flex items-baseline gap-1.5">
+          <span className={cn("text-3xl font-serif tracking-tight leading-none", isPlaceholder ? "text-[var(--muted)]" : "text-[var(--text)]")}>{value}</span>
+          {unit && !isPlaceholder && <span className="text-[10px] font-black text-[var(--muted)] uppercase tracking-widest opacity-50">{unit}</span>}
+        </div>
       </div>
     </motion.div>
   );
@@ -2561,54 +2777,55 @@ function MedRow({ name, dose, time, status }: { name: string, dose: string, time
   const statusColors = {
     taken: "bg-[var(--teal)] text-white dark:text-[#020617]",
     due: "bg-[var(--red)] text-white",
-    upcoming: "bg-[var(--bg)] text-[var(--text2)] border border-[var(--border)]"
+    upcoming: "glass text-[var(--text2)]"
   };
 
   return (
-    <div className="flex items-center justify-between p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl group transition-all hover:bg-[var(--surface)]">
-      <div className="flex items-center gap-4">
-        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center font-bold text-[10px] uppercase shadow-sm", statusColors[status])}>
-          {time}
+    <div className="flex items-center justify-between p-4 glass rounded-2xl group transition-all hover:border-[var(--teal)]/30">
+      <div className="flex items-center gap-5">
+        <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center font-black text-[10px] uppercase shadow-sm relative overflow-hidden", statusColors[status])}>
+          {status === 'taken' && <div className="absolute inset-0 bg-white/10 opacity-50" />}
+          <span className="relative z-10">{time}</span>
         </div>
         <div>
-          <h4 className="text-sm font-bold text-[var(--text)] group-hover:text-[var(--teal)] transition-colors">{name}</h4>
-          <p className="text-[11px] text-[var(--muted)] font-medium opacity-60 tracking-tight">{dose}</p>
+          <h4 className="text-sm font-black text-[var(--text)] group-hover:text-[var(--teal)] transition-colors uppercase tracking-tight tracking-wider">{name}</h4>
+          <p className="text-[11px] text-[var(--muted)] font-bold opacity-70 tracking-tight">{dose}</p>
         </div>
       </div>
       <div className={cn(
-        "w-2 h-2 rounded-full",
-        status === 'taken' ? "bg-[var(--teal)]" : status === 'due' ? "bg-[var(--red)]" : "bg-[var(--border)]"
+        "w-2.5 h-2.5 rounded-full shadow-lg",
+        status === 'taken' ? "bg-[var(--teal)] shadow-[var(--teal)]/20" : status === 'due' ? "bg-[var(--red)] shadow-red-500/20" : "bg-[var(--border)]"
       )} />
     </div>
   );
 }
 
-function QuickAction({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) {
+const QuickAction = memo(function QuickAction({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) {
   const colorMap: Record<string, string> = {
-    teal: "text-[var(--teal)] bg-[var(--teal-glow)]",
-    purple: "text-purple-500 bg-purple-500/10",
-    orange: "text-orange-500 bg-orange-500/10",
-    indigo: "text-indigo-500 bg-indigo-500/10",
-    blue: "text-blue-500 bg-blue-500/10",
-    rose: "text-rose-500 bg-rose-500/10"
+    teal: "text-[var(--teal)] bg-[var(--teal-glow)] shadow-[var(--teal)]/5",
+    purple: "text-purple-500 bg-purple-500/10 shadow-purple-500/5",
+    orange: "text-orange-500 bg-orange-500/10 shadow-orange-500/5",
+    indigo: "text-indigo-500 bg-indigo-500/10 shadow-indigo-500/5",
+    blue: "text-blue-500 bg-blue-500/10 shadow-blue-500/5",
+    rose: "text-rose-500 bg-rose-500/10 shadow-rose-500/5"
   };
 
   return (
     <motion.button
-      whileHover={{ y: -4 }}
-      whileTap={{ scale: 0.95 }}
+      whileHover={{ y: -6, boxShadow: "0 15px 30px rgba(0,0,0,0.06)" }}
+      whileTap={{ scale: 0.94 }}
       onClick={onClick}
-      className="w-full flex flex-col items-center gap-4 p-5 rounded-[32px] bg-[var(--surface)] border border-[var(--border)] hover:border-[var(--teal)]/40 transition-all shadow-sm group"
+      className="w-full flex flex-col items-center gap-4 p-6 rounded-[32px] glass hover:border-[var(--teal)]/40 transition-all shadow-sm group"
     >
-      <div className={cn("w-12 h-12 rounded-[20px] flex items-center justify-center transition-transform group-hover:scale-110", colorMap[color] || "bg-[var(--bg)]")}>
+      <div className={cn("w-14 h-14 rounded-3xl flex items-center justify-center transition-all group-hover:scale-110 shadow-inner group-hover:shadow-lg", colorMap[color] || "bg-[var(--surface)]")}>
         {icon}
       </div>
-      <span className="text-[11px] font-black text-[var(--text)] uppercase tracking-widest">{label}</span>
+      <span className="text-[10px] font-black text-[var(--text)] uppercase tracking-[0.15em] opacity-80">{label}</span>
     </motion.button>
   );
-}
+});
 
-function ChatView({ 
+const ChatView = memo(function ChatView({ 
   chatHistory, 
   setChatHistory, 
   isTyping, 
@@ -2650,31 +2867,53 @@ function ChatView({
     const msg = text || input.trim();
     if (!msg) return;
     
+    // If no active chat, create one and then proceed
+    if (!activeChatId) {
+      await onNewChat();
+      // Since state updates are async, we might still see activeChatId as null
+      // But updateActiveChat handles the null check. 
+      // Re-triggering handleSend might be safer but could cause loops.
+      // Better: createNewChat should return the brand new ID.
+    }
+
     setInput('');
-    const newMsgsWithUser: ChatMessage[] = [...chatHistory, { 
+    const userMsg: ChatMessage = { 
       role: 'user', 
       content: msg,
       timestamp: new Date().toISOString()
-    }];
+    };
+    
+    const newMsgsWithUser = [...chatHistory, userMsg];
+    setChatHistory(newMsgsWithUser); // Optimistic UI update
     await updateActiveChat(newMsgsWithUser);
     setIsTyping(true);
 
     try {
-      const profileCtx = `Patient Profile: ${profile.name}, ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}.`;
-      const prompt = `${profileCtx}\n\nUser: ${msg}`;
-      const response = await callGemini(prompt);
-      const finalMsgs: ChatMessage[] = [...newMsgsWithUser, { 
+      const history = chatHistory.map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }]
+      }));
+
+      const response = await getChatResponse(msg, history, profile);
+      const assistantMsg: ChatMessage = { 
         role: 'assistant', 
         content: response,
         timestamp: new Date().toISOString()
-      }];
+      };
+      
+      const finalMsgs = [...newMsgsWithUser, assistantMsg];
+      setChatHistory(finalMsgs);
       await updateActiveChat(finalMsgs);
     } catch (error) {
-      await updateActiveChat([...newMsgsWithUser, { 
+      console.error(error);
+      const errorMsg: ChatMessage = { 
         role: 'assistant', 
-        content: "I'm sorry, I'm having trouble connecting right now. Please try again later.",
+        content: "I'm sorry, I'm having trouble connecting right now. Please ensure your Gemini API key is correctly set in **Settings > Secrets** and try again.",
         timestamp: new Date().toISOString()
-      }]);
+      };
+      const errorMsgs = [...newMsgsWithUser, errorMsg];
+      setChatHistory(errorMsgs);
+      await updateActiveChat(errorMsgs);
     } finally {
       setIsTyping(false);
     }
@@ -2688,7 +2927,7 @@ function ChatView({
   ];
 
   return (
-    <div className="flex fixed inset-0 z-[200] bg-[var(--bg)] animate-in fade-in duration-300">
+    <div className="flex fixed inset-0 z-[200] bg-[var(--bg)] animate-in fade-in duration-500 overflow-hidden">
       <div className="bg-gradient" />
       {/* Sidebar - Conversation History */}
       <motion.div 
@@ -2697,21 +2936,23 @@ function ChatView({
           width: isSidebarOpen ? 280 : 0,
           opacity: isSidebarOpen ? 1 : 0
         }}
-        className="glass-darker border-r border-white/5 overflow-hidden flex flex-col shrink-0 h-full shadow-2xl"
+        className="glass border-r border-[var(--border)] overflow-hidden flex flex-col shrink-0 h-full shadow-2xl relative z-10"
       >
-        <div className="p-6 border-b border-white/5 flex items-center justify-between">
-          <h3 className="font-serif text-lg font-bold text-[var(--text)]">History</h3>
-          <button onClick={() => setIsSidebarOpen(false)} className="p-1.5 hover:bg-white/5 rounded-lg text-[var(--muted)]">
+        <div className="p-8 border-b border-[var(--border)] flex items-center justify-between">
+          <h3 className="font-serif text-xl font-black text-[var(--text)] tracking-tight">Analytics</h3>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-2 glass-pill text-[var(--muted)] hover:text-red-500 transition-colors">
             <X size={18} />
           </button>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
           <button 
             onClick={onNewChat}
-            className="w-full flex items-center gap-3 p-3 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] rounded-xl text-sm font-bold shadow-lg shadow-[var(--teal)]/20 active:scale-95 transition-all mb-4 border border-white/20"
+            className="w-full flex items-center gap-3.5 p-4 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] rounded-2xl text-[13px] font-black uppercase tracking-wider shadow-lg shadow-[var(--teal)]/20 active:scale-95 transition-all mb-4 border border-white/20"
           >
-            <Plus size={18} />
+            <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+              <Plus size={18} />
+            </div>
             <span>New Consultation</span>
           </button>
 
@@ -2758,27 +2999,27 @@ function ChatView({
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header */}
-        <div className="flex items-center gap-4 px-6 py-4 glass border-b border-white/5 shrink-0">
+        <div className="flex items-center gap-4 px-6 py-4 glass border-b border-[var(--border)] shrink-0">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 -ml-2 hover:glass-morphism rounded-xl transition-colors text-[var(--muted)]"
+            className="p-2.5 glass-pill transition-all active:scale-95 text-[var(--muted)]"
             title="History"
           >
-            <Menu size={24} />
+            <Menu size={22} />
           </button>
           <div className="flex-1">
-            <h2 className="text-lg font-bold text-[var(--text)] tracking-tight">
-              {conversations.find(c => c.id === activeChatId)?.title || 'Health Chat'}
+            <h2 className="text-xl font-serif text-[var(--text)] tracking-tight">
+              {conversations.find(c => c.id === activeChatId)?.title || 'Veda Consultation'}
             </h2>
             <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-              <span className="text-[10px] text-[var(--muted)] font-semibold uppercase tracking-wider">Veda AI Active</span>
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.5)]" />
+              <span className="text-[9px] text-[var(--muted)] font-black uppercase tracking-[0.15em]">Neural Intelligence Active</span>
             </div>
           </div>
           
           <button 
             onClick={() => switchMode('home')} 
-            className="px-4 py-2 glass-morphism text-[var(--text2)] text-xs font-bold rounded-xl hover:glass transition-all border border-white/10"
+            className="px-5 py-2.5 glass-pill text-[var(--text2)] text-[11px] font-black uppercase tracking-widest hover:text-red-500 transition-all active:scale-95"
           >
             Exit
           </button>
@@ -2862,34 +3103,36 @@ function ChatView({
 
         {/* Input Area */}
         {activeChatId && (
-          <div className="p-4 glass-darker border-t border-white/10 shrink-0 pb-safe">
-            <div className="max-w-3xl mx-auto flex items-center gap-2 glass border border-white/20 rounded-3xl px-4 py-2 focus-within:border-[var(--teal)]/50 transition-all shadow-inner">
+          <div className="p-6 glass border-t border-[var(--border)] shrink-0 pb-safe relative z-20">
+            <div className="max-w-3xl mx-auto flex items-center gap-2 glass border border-[var(--border)] rounded-[32px] px-5 py-2.5 focus-within:ring-2 focus-within:ring-[var(--teal)]/20 transition-all shadow-xl">
               <textarea 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-                placeholder="Ask Veda anything..."
-                className="flex-1 bg-transparent border-none outline-none py-2 text-[15px] resize-none max-h-32 text-[var(--text)] placeholder:text-[var(--muted)]"
+                placeholder="Describe your symptoms or ask a medical question..."
+                className="flex-1 bg-transparent border-none outline-none py-2 text-[15px] resize-none max-h-32 text-[var(--text)] placeholder:text-[var(--muted)] font-medium"
                 rows={1}
               />
               <button 
                 onClick={() => handleSend()}
                 disabled={!input.trim()}
                 className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center transition-all active:scale-95",
-                  input.trim() ? "bg-[var(--teal)] text-[#020f0c] shadow-lg shadow-[var(--teal)]/20" : "text-[var(--muted)]/30"
+                  "w-12 h-12 rounded-2xl flex items-center justify-center transition-all active:scale-90",
+                  input.trim() ? "bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] shadow-lg shadow-[var(--teal)]/20" : "text-[var(--muted)]/40 bg-[var(--surface)]"
                 )}
               >
-                <Send size={18} strokeWidth={2.5} />
+                <div className={cn("transition-transform", input.trim() && "rotate-[-45deg] scale-110")}>
+                  <Send size={20} strokeWidth={2.5} />
+                </div>
               </button>
             </div>
             {chatHistory.length === 0 && (
-              <div className="flex flex-wrap gap-2 mt-4 justify-center">
+              <div className="flex flex-wrap gap-2.5 mt-5 justify-center">
                 {suggestions.map(s => (
                   <button 
                     key={s} 
                     onClick={() => handleSend(s)}
-                    className="px-4 py-1.5 glass-morphism border border-white/10 rounded-full text-xs text-[var(--text2)] hover:glass hover:border-white/30 transition-all"
+                    className="px-4 py-2 glass-pill text-[10px] font-black uppercase tracking-wider text-[var(--text2)] hover:border-[var(--teal)]/40 hover:text-[var(--teal)] transition-all bg-[var(--surface)] border-none"
                   >
                     {s}
                   </button>
@@ -2901,11 +3144,11 @@ function ChatView({
       </div>
     </div>
   );
-}
+});
 
 // --- Placeholder views for other modes ---
 
-function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], addJournalEntry: (e: JournalEntry) => Promise<void> }) {
+const JournalView = memo(function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], addJournalEntry: (e: JournalEntry) => Promise<void> }) {
   const [activeTab, setActiveTab] = useState<'log' | 'history'>('log');
   const [mood, setMood] = useState(3);
   const [notes, setNotes] = useState('');
@@ -3153,7 +3396,7 @@ function JournalView({ journal, addJournalEntry }: { journal: JournalEntry[], ad
       )}
     </div>
   );
-}
+});
 
 function SymptomChecker({ profile, switchMode }: { profile: UserProfile, switchMode: (m: AppMode) => void }) {
   const [symptom, setSymptom] = useState('');
@@ -3386,7 +3629,7 @@ function SymptomChecker({ profile, switchMode }: { profile: UserProfile, switchM
             </button>
             <button 
               onClick={() => (window as any).print()}
-              className="px-6 py-5 glass border border-white/10 rounded-2xl flex items-center justify-center text-[var(--muted)] hover:text-white"
+              className="px-6 py-5 glass border border-[var(--border)] rounded-2xl flex items-center justify-center text-[var(--muted)] hover:text-[var(--text)] transition-colors"
             >
               <FileText size={18} />
             </button>
@@ -3397,7 +3640,7 @@ function SymptomChecker({ profile, switchMode }: { profile: UserProfile, switchM
   );
 }
 
-function WellnessCoach({ profile }: { profile: UserProfile }) {
+const WellnessCoach = memo(function WellnessCoach({ profile }: { profile: UserProfile }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -3441,7 +3684,7 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
       console.error(error);
       const errorMsg: ChatMessage = {
         role: 'assistant',
-        content: "I'm sorry, I'm having trouble connecting right now. Please take a deep breath and try again in a moment.",
+        content: "I'm sorry, I'm having trouble connecting right now. Please ensure your Gemini API key is correctly set in **Settings > Secrets** and try again.",
         timestamp: new Date().toISOString()
       };
       setMessages(prev => [...prev, errorMsg]);
@@ -3451,16 +3694,16 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
   };
 
   return (
-    <div className="flex flex-col h-[600px] glass border border-white/10 rounded-[32px] overflow-hidden shadow-2xl">
+    <div className="flex flex-col h-[600px] glass border border-[var(--border)] rounded-[32px] overflow-hidden shadow-2xl">
       {/* Header */}
-      <div className="p-6 border-b border-white/10 bg-gradient-to-r from-purple-500/10 to-indigo-500/10 flex items-center justify-between">
+      <div className="p-6 border-b border-[var(--border)] bg-gradient-to-r from-purple-500/10 to-indigo-500/10 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
             <Sparkles size={24} />
           </div>
           <div>
-            <h3 className="font-serif text-xl tracking-tight text-white">Wellness Coach</h3>
-            <p className="text-[10px] text-purple-400 font-black uppercase tracking-widest opacity-80">Empathetic Support ✦</p>
+            <h3 className="font-serif text-xl tracking-tight text-[var(--text)] dark:text-white">Wellness Coach</h3>
+            <p className="text-[10px] text-purple-600 dark:text-purple-400 font-black uppercase tracking-widest opacity-80">Empathetic Support ✦</p>
           </div>
         </div>
       </div>
@@ -3472,11 +3715,11 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
       >
         {messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-60">
-            <div className="p-4 rounded-full bg-white/5">
-              <Bot size={40} className="text-purple-400" />
+            <div className="p-4 rounded-full bg-[var(--muted)]/10">
+              <Bot size={40} className="text-purple-600 dark:text-purple-400" />
             </div>
             <div className="space-y-1">
-              <p className="text-sm font-bold text-white">How are you feeling today?</p>
+              <p className="text-sm font-bold text-[var(--text)]">How are you feeling today?</p>
               <p className="text-xs text-[var(--muted)] max-w-[200px]">I'm here to listen, support, and help you find peace.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2 pt-4">
@@ -3484,7 +3727,7 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
                 <button 
                   key={tip}
                   onClick={() => setInput(tip)}
-                  className="px-4 py-2 rounded-full border border-white/5 bg-white/2 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all text-[var(--muted)]"
+                  className="px-4 py-2 rounded-full border border-[var(--border)] bg-[var(--card2)] text-[10px] font-black uppercase tracking-widest hover:bg-[var(--muted)]/10 transition-all text-[var(--muted)]"
                 >
                   {tip}
                 </button>
@@ -3507,7 +3750,7 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
               "p-4 rounded-2xl text-sm leading-relaxed shadow-lg",
               m.role === 'user' 
                 ? "bg-indigo-600 text-white rounded-tr-none" 
-                : "glass border border-white/5 text-[var(--text2)] rounded-tl-none"
+                : "glass border border-[var(--border)] text-[var(--text)] rounded-tl-none"
             )}>
               {m.content}
             </div>
@@ -3526,7 +3769,7 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
       </div>
 
       {/* Input Area */}
-      <div className="p-6 border-t border-white/10 bg-black/20">
+      <div className="p-6 border-t border-[var(--border)] bg-[var(--card2)]">
         <div className="relative flex items-center gap-3">
           <input
             type="text"
@@ -3534,7 +3777,7 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSend()}
             placeholder="Share your thoughts..."
-            className="flex-1 glass border border-white/5 rounded-2xl px-5 py-4 text-sm font-medium outline-none focus:border-purple-500/50 transition-all text-white placeholder:text-white/20"
+            className="flex-1 glass border border-[var(--border)] rounded-2xl px-5 py-4 text-sm font-medium outline-none focus:border-purple-500/50 transition-all text-[var(--text)] placeholder:text-[var(--muted)]"
           />
           <button
             onClick={handleSend}
@@ -3547,9 +3790,9 @@ function WellnessCoach({ profile }: { profile: UserProfile }) {
       </div>
     </div>
   );
-}
+});
 
-function MedicationInfo({ profile }: { profile: UserProfile }) {
+const MedicationInfo = memo(function MedicationInfo({ profile }: { profile: UserProfile }) {
   const [med, setMed] = useState('');
   const [result, setResult] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -3586,16 +3829,16 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
         </div>
       </div>
 
-      <div className="glass border border-white/10 rounded-[32px] p-8 shadow-xl space-y-8 relative overflow-hidden group">
+      <div className="glass border border-[var(--border)] rounded-[32px] p-8 shadow-xl space-y-8 relative overflow-hidden group">
         <div className="absolute top-0 right-0 w-48 h-48 bg-purple-500/5 blur-[80px] -mr-24 -mt-24 pointer-events-none group-hover:bg-purple-500/10 transition-colors duration-700" />
         
         <div className="space-y-4">
-          <label className="text-[10px] font-black text-purple-400 uppercase tracking-[0.25em] ml-1">Medicine Name</label>
+          <label className="text-[10px] font-black text-purple-600 dark:text-purple-400 uppercase tracking-[0.25em] ml-1">Medicine Name</label>
           <input 
             value={med}
             onChange={e => setMed(e.target.value)}
             placeholder="e.g. Metformin, Paracetamol..."
-            className="w-full glass border border-white/5 rounded-2xl p-5 text-sm font-medium outline-none focus:border-purple-500/50 transition-all shadow-inner text-[var(--text)] placeholder:text-[var(--muted)]/40"
+            className="w-full glass border border-[var(--border)] rounded-2xl p-5 text-sm font-medium outline-none focus:border-purple-500/50 transition-all shadow-inner text-[var(--text)] placeholder:text-[var(--muted)]/40"
           />
         </div>
 
@@ -3622,12 +3865,12 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass border border-white/10 rounded-[32px] p-8 shadow-2xl relative overflow-hidden"
+          className="glass border border-[var(--border)] rounded-[32px] p-8 shadow-2xl relative overflow-hidden"
         >
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl glass-morphism border border-purple-500/20 flex items-center justify-center text-purple-400 font-bold">
+              <div className="w-10 h-10 rounded-xl glass border border-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400 font-bold">
                 <Bot size={22} />
               </div>
               <div>
@@ -3637,7 +3880,7 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
             </div>
             <button onClick={() => setResult('')} className="p-2 text-[var(--muted)] hover:text-[var(--text)] transition-colors"><X size={20} /></button>
           </div>
-          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-white/2 border border-white/5 rounded-2xl p-6 shadow-inner">
+          <div className="prose prose-sm max-w-none prose-p:text-[var(--text2)] prose-li:text-[var(--text2)] prose-p:leading-relaxed bg-[var(--card2)] border border-[var(--border)] rounded-2xl p-6 shadow-inner">
             <Markdown>{result}</Markdown>
           </div>
         </motion.div>
@@ -3689,9 +3932,9 @@ function MedicationInfo({ profile }: { profile: UserProfile }) {
       </div>
     </div>
   );
-}
+});
 
-function HealthInsights({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
+const HealthInsights = memo(function HealthInsights({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
   const [insight, setInsight] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -3752,9 +3995,9 @@ function HealthInsights({ journal, profile }: { journal: JournalEntry[], profile
       )}
     </div>
   );
-}
+});
 
-function TriageView({ profile }: { profile: UserProfile }) {
+const TriageView = memo(function TriageView({ profile }: { profile: UserProfile }) {
   const [symptom, setSymptom] = useState('');
   const [result, setResult] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -3844,9 +4087,9 @@ function TriageView({ profile }: { profile: UserProfile }) {
       )}
     </div>
   );
-}
+});
 
-function HealthScoreView({ journal, profile, switchMode }: { journal: JournalEntry[], profile: UserProfile, switchMode: (m: AppMode, tab?: any) => void }) {
+const HealthScoreView = memo(function HealthScoreView({ journal, profile, switchMode }: { journal: JournalEntry[], profile: UserProfile, switchMode: (m: AppMode, tab?: any) => void }) {
   const score = calculateScore(journal, profile);
   const [aiInsight, setAiInsight] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -3969,9 +4212,9 @@ function HealthScoreView({ journal, profile, switchMode }: { journal: JournalEnt
       </div>
     </div>
   );
-}
+});
 
-function ScoreFactor({ label, value, weight }: { label: string, value: number, weight: number }) {
+const ScoreFactor = memo(function ScoreFactor({ label, value, weight }: { label: string, value: number, weight: number }) {
   return (
     <div className="glass border border-white/5 rounded-3xl p-5 space-y-4 hover:border-white/10 transition-colors shadow-lg">
       <div className="flex justify-between items-center">
@@ -3989,9 +4232,9 @@ function ScoreFactor({ label, value, weight }: { label: string, value: number, w
       <p className="text-[8px] text-[var(--muted)] font-black uppercase tracking-[0.2em] opacity-40">Weight Contribution: {weight}%</p>
     </div>
   );
-}
+});
 
-function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile, updateProfile: (p: UserProfile) => Promise<void> }) {
+const PrescriptionScanner = memo(function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile, updateProfile: (p: UserProfile) => Promise<void> }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -4009,7 +4252,12 @@ function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile,
       }
     } catch (err: any) {
       console.error("Error accessing camera:", err);
-      setCameraError("Could not access camera. Please check permissions or try uploading instead.");
+      const isDismissed = err.name === 'NotAllowedError' || err.name === 'PermissionDismissedError' || err.message?.toLowerCase().includes('dismissed') || err.message?.toLowerCase().includes('denied');
+      if (isDismissed) {
+        setCameraError("Camera permission was dismissed or blocked. Please ensure you allow access. If you're in an iframe, try opening the app in a new tab.");
+      } else {
+        setCameraError(`Camera Error: ${err.message || err.name}. Please check your hardware or try uploading instead.`);
+      }
     }
   };
 
@@ -4138,9 +4386,9 @@ function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile,
             
             <button 
               onClick={startCamera}
-              className="w-full py-6 glass border border-white/10 text-white font-black rounded-[28px] shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-3 text-xs uppercase tracking-widest"
+              className="w-full py-6 glass border border-[var(--border)] text-[var(--text)] font-black rounded-[28px] shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-3 text-xs uppercase tracking-widest"
             >
-              <Camera size={20} className="text-emerald-400" />
+              <Camera size={20} className="text-emerald-500" />
               <span>Open Camera Feed</span>
             </button>
             
@@ -4198,24 +4446,24 @@ function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile,
             </button>
           </div>
 
-          <div className="bg-white/2 border border-white/5 rounded-3xl p-7 shadow-inner space-y-6">
+          <div className="bg-[var(--card2)] border border-[var(--border)] rounded-3xl p-7 shadow-inner space-y-6">
              {result.summary && (
                <div className="space-y-2">
-                 <p className="text-[10px] font-bold text-emerald-500/60 uppercase tracking-widest">Medical Summary</p>
+                 <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500/60 uppercase tracking-widest">Medical Summary</p>
                  <p className="text-sm leading-relaxed text-[var(--text2)]">{result.summary}</p>
                </div>
              )}
 
              <div className="space-y-4">
-               <p className="text-[10px] font-bold text-emerald-500/60 uppercase tracking-widest">Extracted Medications</p>
+               <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500/60 uppercase tracking-widest">Extracted Medications</p>
                <div className="grid gap-3">
                  {result.medications?.map((m: any, i: number) => (
-                   <div key={i} className="p-4 bg-white/5 border border-white/5 rounded-2xl flex items-center justify-between">
+                   <div key={i} className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl flex items-center justify-between">
                      <div>
-                       <p className="font-bold text-white">{m.name}</p>
+                       <p className="font-bold text-[var(--text)] dark:text-white">{m.name}</p>
                        <p className="text-xs text-[var(--muted)]">{m.dose} · {m.dailyFrequency}x Daily · {m.duration} Days</p>
                      </div>
-                     <div className="text-[10px] font-black uppercase text-emerald-400/60 bg-emerald-400/5 px-2 py-1 rounded-lg">
+                     <div className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400/60 bg-emerald-500/10 px-2 py-1 rounded-lg">
                        {m.instructions}
                      </div>
                    </div>
@@ -4224,28 +4472,28 @@ function PrescriptionScanner({ profile, updateProfile }: { profile: UserProfile,
              </div>
           </div>
 
-          <div className="p-5 glass-darker border border-amber-500/20 rounded-2xl flex items-center gap-4">
+          <div className="p-5 glass border border-amber-500/20 rounded-2xl flex items-center gap-4">
              <ShieldAlert size={20} className="text-amber-500 shrink-0" />
-             <p className="text-[11px] text-amber-200/60 font-medium italic">Always cross-verify extracted dosages with your clinical pharmacist before consumption.</p>
+             <p className="text-[11px] text-amber-700 dark:text-amber-200/60 font-medium italic">Always cross-verify extracted dosages with your clinical pharmacist before consumption.</p>
           </div>
         </motion.div>
       )}
     </div>
   );
-}
+});
 
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="glass-darker border border-white/10 p-4 rounded-2xl shadow-2xl backdrop-blur-2xl relative overflow-hidden">
+      <div className="glass border border-[var(--border)] p-4 rounded-2xl shadow-2xl backdrop-blur-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-[var(--teal)]/20 to-transparent" />
         <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.25em] mb-3 opacity-60">{label}</p>
         <div className="space-y-2">
           {payload.map((entry: any, index: number) => (
             <div key={index} className="flex items-center gap-3 text-xs font-bold">
-              <div className="w-2.5 h-2.5 rounded-full shadow-[0_0_8px_rgba(255,255,255,0.1)]" style={{ backgroundColor: entry.color }} />
-              <span className="text-[var(--text)]">{entry.name}: <span className="text-white ml-auto">{entry.value}</span></span>
+              <div className="w-2.5 h-2.5 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.05)]" style={{ backgroundColor: entry.color }} />
+              <span className="text-[var(--text)]">{entry.name}: <span className="text-[var(--text)] dark:text-white ml-auto">{entry.value}</span></span>
             </div>
           ))}
         </div>
@@ -4255,7 +4503,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journal: JournalEntry[], initialTab?: 'wellbeing' | 'bp' | 'sugar' | 'weight', onAddEntry?: (entry: JournalEntry) => Promise<void> }) {
+const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journal: JournalEntry[], initialTab?: 'wellbeing' | 'bp' | 'sugar' | 'weight', onAddEntry?: (entry: JournalEntry) => Promise<void> }) {
   const [activeTab, setActiveTab] = useState<'wellbeing' | 'bp' | 'sugar' | 'weight'>(initialTab);
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d');
   
@@ -4383,7 +4631,7 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
             onClick={() => setTimeRange(range.id as any)}
             className={cn(
               "px-5 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all",
-              timeRange === range.id ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
+              timeRange === range.id ? "bg-[var(--surface)] text-[var(--teal)] shadow-sm border border-[var(--border)]" : "text-[var(--muted)] hover:text-[var(--text)] transition-colors"
             )}
           >
             {range.label}
@@ -4400,16 +4648,16 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
           <div className="flex items-center gap-4 relative z-10">
             {activeTab === 'bp' && (
               <>
-                <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="SYS" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
-                <span className="text-2xl font-light text-white/20">/</span>
-                <input type="number" value={quickLogValue2} onChange={e => setQuickLogValue2(e.target.value)} placeholder="DIA" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
+                <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="SYS" className="flex-1 glass border border-[var(--border)] rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-[var(--text)] font-mono placeholder:opacity-30" />
+                <span className="text-2xl font-light text-[var(--muted)]/40">/</span>
+                <input type="number" value={quickLogValue2} onChange={e => setQuickLogValue2(e.target.value)} placeholder="DIA" className="flex-1 glass border border-[var(--border)] rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-[var(--text)] font-mono placeholder:opacity-30" />
               </>
             )}
             {activeTab === 'sugar' && (
-              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="MG/DL (e.g. 95)" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
+              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="MG/DL (e.g. 95)" className="flex-1 glass border border-[var(--border)] rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-[var(--text)] font-mono placeholder:opacity-30" />
             )}
             {activeTab === 'weight' && (
-              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="KG (e.g. 70.4)" className="flex-1 glass border border-white/10 rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-white font-mono placeholder:opacity-30" />
+              <input type="number" value={quickLogValue1} onChange={e => setQuickLogValue1(e.target.value)} placeholder="KG (e.g. 70.4)" className="flex-1 glass border border-[var(--border)] rounded-2xl px-6 py-4 text-sm focus:border-blue-500/50 outline-none text-[var(--text)] font-mono placeholder:opacity-30" />
             )}
             <button 
               onClick={handleQuickLog}
@@ -4431,7 +4679,7 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
               <BarChart3 size={48} />
             </div>
             <div className="space-y-2">
-              <p className="text-xl font-serif text-white tracking-tight">Signal Data Missing</p>
+              <p className="text-xl font-serif text-[var(--text)] dark:text-white tracking-tight">Signal Data Missing</p>
               <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] max-w-[240px] leading-loose opacity-60">Log your first biometric entry to initiate the neural progress engine.</p>
             </div>
           </div>
@@ -4581,7 +4829,7 @@ function VitalsGraph({ journal, initialTab = 'wellbeing', onAddEntry }: { journa
       </div>
     </div>
   );
-}
+});
 
 function Onboarding({ profile, setProfile, updateProfile, onComplete }: { profile: UserProfile, setProfile: any, updateProfile: (p: UserProfile) => Promise<void>, onComplete: () => void }) {
   const [step, setStep] = useState(1);
@@ -4884,7 +5132,9 @@ function ProfileView({
   notificationPermission,
   setNotificationPermission,
   requestNotificationPermission,
-  onDeleteAccount
+  onDeleteAccount,
+  deferredPrompt,
+  onInstallApp
 }: { 
   profile: UserProfile, 
   setProfile: any, 
@@ -4894,7 +5144,9 @@ function ProfileView({
   notificationPermission: NotificationPermission,
   setNotificationPermission: (p: NotificationPermission) => void,
   requestNotificationPermission: () => void,
-  onDeleteAccount: () => Promise<void>
+  onDeleteAccount: () => Promise<void>,
+  deferredPrompt: any,
+  onInstallApp: () => void
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState(profile);
@@ -5249,6 +5501,41 @@ function ProfileView({
             {profile.vaccinationHistory?.length > 0 ? profile.vaccinationHistory.map(c => (
               <span key={c} className="px-3 py-1.5 bg-[var(--card2)] border border-[var(--border)] rounded-lg text-xs font-medium">{c}</span>
             )) : <p className="text-xs text-[var(--muted)]">No vaccines listed.</p>}
+          </div>
+        </div>
+
+        <div className="space-y-4 pt-6 border-t border-[var(--border)]">
+          <h4 className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest flex items-center gap-2">
+            <Download size={14} className="text-[var(--teal)]" /> Get the App
+          </h4>
+          <div className="bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl p-5">
+            <p className="text-xs text-[var(--text2)] leading-relaxed mb-4 font-medium">
+              Install Veda Health on your phone for a faster, app-like experience with offline access and notifications.
+            </p>
+            
+            {deferredPrompt ? (
+              <button 
+                onClick={onInstallApp}
+                className="w-full py-3 bg-[var(--teal)] text-[#020f0c] font-black rounded-xl shadow-lg flex items-center justify-center gap-2 text-xs uppercase tracking-widest active:scale-95 transition-all"
+              >
+                <Download size={16} />
+                Install Veda Health
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                  <p className="text-[10px] font-bold text-[var(--muted)] uppercase mb-2">Instructions for Mobile</p>
+                  <ul className="text-xs space-y-2 text-[var(--text)] opacity-80">
+                    <li className="flex gap-2">
+                      <span className="text-[var(--teal)] font-black">Android:</span> Tap the menu (⋮) and select "Install App" or "Add to Home Screen".
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="text-blue-400 font-black">iOS (iPhone):</span> Tap the "Share" button at bottom and scroll to "Add to Home Screen".
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -6046,7 +6333,7 @@ function FamilyHealthCircle({ family, onAddMember, onUpdateMember, onDeleteMembe
   );
 }
 
-function MedicineDelivery({ reminders, profile, cart, setCart, showCart, setShowCart }: { 
+const MedicineDelivery = memo(function MedicineDelivery({ reminders, profile, cart, setCart, showCart, setShowCart }: { 
   reminders: Reminder[], 
   profile: UserProfile,
   cart: any[],
@@ -6898,9 +7185,9 @@ function MedicineDelivery({ reminders, profile, cart, setCart, showCart, setShow
     )}
     </div>
   );
-}
+});
 
-function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsurancePolicy[], onAddPolicy: (p: Omit<UserInsurancePolicy, 'id'>) => Promise<void>, profile: UserProfile }) {
+const InsuranceView = memo(function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsurancePolicy[], onAddPolicy: (p: Omit<UserInsurancePolicy, 'id'>) => Promise<void>, profile: UserProfile }) {
   const [activeTab, setActiveTab] = useState<'my' | 'advisor' | 'compare'>('my');
   const [showAdd, setShowAdd] = useState(false);
   const [analysisResult, setAnalysisResult] = useState('');
@@ -7066,7 +7353,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
           onClick={() => setActiveTab('my')}
           className={cn(
             "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
-            activeTab === 'my' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
+            activeTab === 'my' ? "bg-[var(--surface)] text-[var(--teal)] shadow-sm border border-[var(--border)]" : "text-[var(--muted)] hover:text-[var(--text)] transition-colors"
           )}
         >
           My Policies
@@ -7075,7 +7362,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
           onClick={() => setActiveTab('advisor')}
           className={cn(
             "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
-            activeTab === 'advisor' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
+            activeTab === 'advisor' ? "bg-[var(--surface)] text-[var(--teal)] shadow-sm border border-[var(--border)]" : "text-[var(--muted)] hover:text-[var(--text)] transition-colors"
           )}
         >
           AI Advisor
@@ -7084,7 +7371,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
           onClick={() => setActiveTab('compare')}
           className={cn(
             "flex-1 py-3.5 text-[10px] font-black uppercase tracking-[0.15em] rounded-2xl transition-all relative z-10",
-            activeTab === 'compare' ? "bg-white/10 text-white shadow-inner" : "text-[var(--muted)] hover:text-white"
+            activeTab === 'compare' ? "bg-[var(--surface)] text-[var(--teal)] shadow-sm border border-[var(--border)]" : "text-[var(--muted)] hover:text-white"
           )}
         >
           Market Check
@@ -7669,7 +7956,7 @@ function InsuranceView({ policies, onAddPolicy, profile }: { policies: UserInsur
       )}
     </div>
   );
-}
+});
 
 function InsuranceCard({ title, desc, icon }: { title: string, desc: string, icon: React.ReactNode }) {
   return (
@@ -7687,7 +7974,7 @@ function InsuranceCard({ title, desc, icon }: { title: string, desc: string, ico
 }
 
 
-function RemindersView({ 
+const RemindersView = memo(function RemindersView({ 
   reminders, 
   onToggle, 
   onDelete, 
@@ -8025,9 +8312,9 @@ function RemindersView({
       </div>
     </div>
   );
-}
+});
 
-function AlertsView({ 
+const AlertsView = memo(function AlertsView({ 
   profile, 
   journal, 
   triggerPushNotification,
@@ -8244,7 +8531,7 @@ function AlertsView({
       </div>
     </div>
   );
-}
+});
 
 function HealthCalendar({ appointments, onAddAppointment, profile }: { appointments: Appointment[], onAddAppointment: (appt: Omit<Appointment, 'id'>) => Promise<void>, profile: UserProfile }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -9028,9 +9315,9 @@ function MindWellnessDashboard({ journal }: { journal: JournalEntry[] }) {
              <p className="text-sm p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/10">{analysis.recommendation}</p>
           </div>
 
-          <div className="p-6 bg-indigo-900/10 border border-indigo-500/20 rounded-2xl">
-             <h4 className="font-serif text-lg mb-4 text-indigo-400">Micro-Meditation</h4>
-             <p className="text-sm leading-relaxed text-indigo-200">
+          <div className="p-6 bg-indigo-900/5 dark:bg-indigo-900/10 border border-indigo-500/20 rounded-2xl">
+             <h4 className="font-serif text-lg mb-4 text-indigo-600 dark:text-indigo-400">Micro-Meditation</h4>
+             <p className="text-sm leading-relaxed text-indigo-900 dark:text-indigo-200">
                Based on your entry, take a 2-minute break: {analysis.stressLevel > 6 ? "Find a quiet space, close your eyes, and take 5 deep, slow breaths. Exhale for longer than you inhale." : "Take a moment to write down 3 things you are grateful for right now. Focus on the feeling of gratitude."}
              </p>
           </div>
@@ -9116,7 +9403,7 @@ function PatternDetector({ journal }: { journal: JournalEntry[] }) {
   return (
     <div className="space-y-6 pb-20">
       <div className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/20">
+        <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 border border-white/10">
           <BarChart3 size={28} />
         </div>
         <div>
@@ -9125,10 +9412,10 @@ function PatternDetector({ journal }: { journal: JournalEntry[] }) {
         </div>
       </div>
 
-      <div className="glass border border-white/10 rounded-[44px] p-10 text-center space-y-6 shadow-2xl relative overflow-hidden group">
+      <div className="glass border border-[var(--border)] rounded-[44px] p-10 text-center space-y-6 shadow-2xl relative overflow-hidden group">
         <div className="absolute -right-16 -top-16 w-64 h-64 bg-blue-500/5 rounded-full blur-[100px] pointer-events-none group-hover:bg-blue-500/10 transition-colors" />
         
-        <div className="w-24 h-24 rounded-[32px] glass-darker flex items-center justify-center mx-auto text-blue-400 border border-blue-500/10 shadow-inner group-hover:scale-110 transition-transform duration-700">
+        <div className="w-24 h-24 rounded-[32px] glass flex items-center justify-center mx-auto text-blue-600 dark:text-blue-400 border border-blue-500/10 shadow-inner group-hover:scale-110 transition-transform duration-700">
           <Sparkles size={44} />
         </div>
         <div className="space-y-2">
@@ -9181,7 +9468,7 @@ function PatternDetector({ journal }: { journal: JournalEntry[] }) {
   );
 }
 
-function AdviceView({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
+const AdviceView = memo(function AdviceView({ journal, profile }: { journal: JournalEntry[], profile: UserProfile }) {
   const [result, setResult] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [customInput, setCustomInput] = useState('');
@@ -9287,7 +9574,7 @@ function AdviceView({ journal, profile }: { journal: JournalEntry[], profile: Us
       )}
     </div>
   );
-}
+});
 
 function AdviceCard({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) {
   const colors: Record<string, string> = {
@@ -9313,7 +9600,7 @@ function AdviceCard({ icon, label, onClick, color }: { icon: React.ReactNode, la
   );
 }
 
-function OpinionView({ profile }: { profile: UserProfile }) {
+const OpinionView = memo(function OpinionView({ profile }: { profile: UserProfile }) {
   const [diagnosis, setDiagnosis] = useState('');
   const [result, setResult] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -9413,7 +9700,7 @@ function OpinionView({ profile }: { profile: UserProfile }) {
       )}
     </div>
   );
-}
+});
 
 // --- Leaflet Marker Icons Fix ---
 // This is necessary because Vite/Webpack sometimes mangle the paths to Leaflet's default marker icons
@@ -9487,8 +9774,11 @@ function MapHandler({ placeType, onPlacesFound, center }: { placeType: string, o
         
         const endpoints = [
             'https://overpass-api.de/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter',
+            'https://z.overpass-api.de/api/interpreter',
             'https://overpass.kumi.systems/api/interpreter',
             'https://overpass.n.osm.ch/api/interpreter',
+            'https://overpass.openstreetmap.ru/api/interpreter',
             'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
         ];
 
@@ -9497,9 +9787,14 @@ function MapHandler({ placeType, onPlacesFound, center }: { placeType: string, o
             if (searchCompleted) return;
             try {
                 console.log(`Trying Overpass endpoint: ${endpoint}`);
-                const response = await fetch(`${endpoint}?data=${encodeURIComponent(query)}`);
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `data=${encodeURIComponent(query)}`
+                });
+                
                 if (!response.ok) {
-                    console.warn(`Endpoint ${endpoint} returned ${response.status}`);
+                    console.warn(`Endpoint ${endpoint} returned status ${response.status}`);
                     continue;
                 }
                 const data = await response.json();
@@ -9523,7 +9818,7 @@ function MapHandler({ placeType, onPlacesFound, center }: { placeType: string, o
                     break;
                 }
             } catch (error) {
-                console.error(`Endpoint ${endpoint} failed:`, error);
+                console.warn(`Endpoint ${endpoint} failed:`, error);
             }
         }
 
@@ -9810,7 +10105,7 @@ function HospitalView() {
   );
 }
 
-function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRecord, profile }: { documents: HealthDocument[], onAddDocument: (doc: Omit<HealthDocument, 'id'>) => void, onDeleteDocument: (id: string) => void, onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
+const HealthLockerView = memo(function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRecord, profile }: { documents: HealthDocument[], onAddDocument: (doc: Omit<HealthDocument, 'id'>) => void, onDeleteDocument: (id: string) => void, onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
   const [activeCategory, setActiveCategory] = useState<'all' | 'prescription' | 'scan' | 'report' | 'insurance'>('all');
   const [selectedDoc, setSelectedDoc] = useState<HealthDocument | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -9952,14 +10247,14 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         <motion.div 
           layout
-          className="p-8 glass-darker border border-white/10 rounded-[40px] flex flex-col items-center justify-center text-center space-y-4 border-dashed cursor-pointer hover:bg-white/5 transition-all group"
+          className="p-8 glass border border-[var(--border)] rounded-[40px] flex flex-col items-center justify-center text-center space-y-4 border-dashed cursor-pointer hover:bg-[var(--muted)]/5 transition-all group"
           onClick={() => handleFileUpload(true)}
         >
           <div className="w-16 h-16 rounded-[24px] bg-indigo-500/10 flex items-center justify-center text-indigo-400 group-hover:scale-110 transition-transform">
             <Sparkles size={32} />
           </div>
           <div>
-            <p className="text-sm font-bold text-white">Smart Vault</p>
+            <p className="text-sm font-bold text-[var(--text)] dark:text-white">Smart Vault</p>
             <p className="text-[10px] text-[var(--muted)] font-medium mt-1">AI will categorize & summarize</p>
           </div>
         </motion.div>
@@ -9985,7 +10280,7 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
               <div className="flex gap-1">
                 <button 
                   onClick={() => setSelectedDoc(doc)}
-                  className="p-2 hover:bg-white/10 rounded-xl text-[var(--muted)] hover:text-white transition-colors"
+                  className="p-2 hover:bg-[var(--card2)] rounded-xl text-[var(--muted)] hover:text-[var(--text)] transition-colors"
                 >
                   <Eye size={18} />
                 </button>
@@ -9998,24 +10293,24 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
               </div>
             </div>
 
-            <div className="space-y-1">
+            <div className="space-y-1 text-left">
               <div className="flex items-center gap-2">
                 <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400/60">{doc.category}</p>
                 {doc.notes?.includes("summary") || doc.notes?.length > 50 && (
                   <div className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse" title="AI Insight Available" />
                 )}
               </div>
-              <h3 className="font-bold text-white truncate pr-4">{doc.name}</h3>
+              <h3 className="font-bold text-[var(--text)] dark:text-white truncate pr-4">{doc.name}</h3>
               <p className="text-[10px] text-[var(--muted)] font-medium">{new Date(doc.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
             </div>
 
             <div className="mt-6 flex items-center justify-between">
               <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 rounded-lg">
-                <ShieldCheck size={10} className="text-emerald-400" />
-                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">Encrypted</span>
+                <ShieldCheck size={10} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Encrypted</span>
               </div>
               <button 
-                className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] hover:text-white transition-colors"
+                className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] hover:text-[var(--text)] transition-colors"
                 onClick={() => {
                   const link = document.createElement('a');
                   link.href = doc.fileData;
@@ -10046,12 +10341,12 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
               exit={{ scale: 0.9, opacity: 0 }}
               className="relative w-full max-w-6xl h-[90vh] glass-darker border border-white/10 rounded-[48px] shadow-2xl overflow-hidden flex flex-col lg:flex-row"
             >
-              <div className="flex-1 overflow-auto p-4 flex flex-col bg-black/40 border-r border-white/10">
+              <div className="flex-1 overflow-auto p-4 flex flex-col bg-[var(--bg)] border-r border-[var(--border)]">
                 <div className="p-6 flex items-center justify-between">
                   <div>
-                    <h3 className="text-2xl font-serif text-white">{selectedDoc.name}</h3>
+                    <h3 className="text-2xl font-serif text-[var(--text)] dark:text-white">{selectedDoc.name}</h3>
                     <div className="flex items-center gap-2 mt-2">
-                       <span className="px-2 py-0.5 bg-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedDoc.category}</span>
+                       <span className="px-2 py-0.5 bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedDoc.category}</span>
                        <span className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest opacity-60">{new Intl.DateTimeFormat('en-IN', { dateStyle: 'long' }).format(new Date(selectedDoc.date))}</span>
                     </div>
                   </div>
@@ -10063,11 +10358,11 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
                         link.download = selectedDoc.name;
                         link.click();
                       }}
-                      className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl text-white transition-colors"
+                      className="p-3 bg-[var(--card2)] hover:bg-[var(--muted)]/10 rounded-2xl text-[var(--text)] transition-colors"
                     >
                       <Download size={20} />
                     </button>
-                    <button onClick={() => setSelectedDoc(null)} className="p-3 bg-white/5 hover:bg-rose-500/10 rounded-2xl text-white lg:hidden transition-colors">
+                    <button onClick={() => setSelectedDoc(null)} className="p-3 bg-[var(--card2)] hover:bg-rose-500/10 rounded-2xl text-[var(--text)] lg:hidden transition-colors">
                       <X size={20} />
                     </button>
                   </div>
@@ -10075,13 +10370,13 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
 
                 <div className="flex-1 flex items-center justify-center p-8">
                   {selectedDoc.mimeType.includes('image') ? (
-                    <img src={selectedDoc.fileData} alt={selectedDoc.name} className="max-w-full max-h-full object-contain rounded-3xl shadow-2xl border border-white/10" />
+                    <img src={selectedDoc.fileData} alt={selectedDoc.name} className="max-w-full max-h-full object-contain rounded-3xl shadow-2xl border border-[var(--border)]" />
                   ) : (
                     <div className="text-center p-12 space-y-6">
-                      <div className="w-24 h-24 rounded-[32px] bg-indigo-500/10 flex items-center justify-center text-indigo-400 mx-auto">
+                      <div className="w-24 h-24 rounded-[32px] bg-indigo-500/10 flex items-center justify-center text-indigo-600 dark:text-indigo-400 mx-auto">
                         <FileText size={48} />
                       </div>
-                      <p className="text-xl font-bold text-white">PDF Document Preview</p>
+                      <p className="text-xl font-bold text-[var(--text)] dark:text-white">PDF Document Preview</p>
                       <button 
                         onClick={() => {
                           const win = window.open();
@@ -10096,10 +10391,10 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
                 </div>
               </div>
 
-              <div className="w-full lg:w-[400px] flex flex-col h-full bg-black/60 relative">
+              <div className="w-full lg:w-[400px] flex flex-col h-full bg-[var(--card)] relative">
                 <button 
                   onClick={() => setSelectedDoc(null)} 
-                  className="absolute top-6 right-6 p-3 bg-white/5 hover:bg-white/10 rounded-2xl text-white hidden lg:flex transition-colors z-10"
+                  className="absolute top-6 right-6 p-3 bg-[var(--card2)] hover:bg-[var(--muted)]/10 rounded-2xl text-[var(--text)] hidden lg:flex transition-colors z-10"
                 >
                   <X size={20} />
                 </button>
@@ -10112,7 +10407,7 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
                         {!analysisResult && !isAnalyzing && (
                           <button 
                             onClick={runQuickAnalysis}
-                            className="text-[8px] font-black uppercase tracking-widest text-indigo-300 hover:text-white transition-colors underline underline-offset-4"
+                            className="text-[8px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 hover:text-[var(--text)] transition-colors underline underline-offset-4"
                           >
                             Analyze Now
                           </button>
@@ -10120,19 +10415,19 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
                       </div>
 
                       {isAnalyzing ? (
-                        <div className="p-8 rounded-3xl border border-white/5 bg-white/5 flex flex-col items-center text-center space-y-4">
+                        <div className="p-8 rounded-3xl border border-[var(--border)] bg-[var(--card2)] flex flex-col items-center text-center space-y-4">
                           <div className="relative">
-                            <Sparkles size={32} className="text-indigo-400 animate-pulse" />
+                            <Sparkles size={32} className="text-indigo-600 dark:text-indigo-400 animate-pulse" />
                             <div className="absolute inset-0 bg-indigo-400 blur-2xl opacity-20 animate-pulse" />
                           </div>
-                          <p className="text-sm font-bold text-white">Decrypting & Analyzing...</p>
+                          <p className="text-sm font-bold text-[var(--text)] dark:text-white">Decrypting & Analyzing...</p>
                           <p className="text-[10px] text-[var(--muted)]">Veda is extracting key insights</p>
                         </div>
                       ) : (
                         <div className="space-y-6">
                           <div>
                             <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] mb-3 opacity-60">Smart Summary</p>
-                            <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
+                            <div className="p-5 rounded-3xl bg-[var(--bg)] border border-[var(--border)]">
                               <p className="text-sm text-[var(--text2)] leading-relaxed italic">
                                 "{analysisResult?.summary || selectedDoc.notes || "No analysis available yet. Tap analyze to extract insights."}"
                               </p>
@@ -10144,84 +10439,83 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
                               <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60">Extracted Vitals</p>
                               <div className="grid grid-cols-2 gap-3">
                                 {analysisResult.extractedData.doctorName && (
-                                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
-                                    <p className="text-[8px] font-black uppercase tracking-widest text-indigo-400 mb-1">Doctor</p>
-                                    <p className="text-xs font-bold text-white truncate">{analysisResult.extractedData.doctorName}</p>
+                                  <div className="p-4 rounded-2xl bg-[var(--card2)] border border-[var(--border)]">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400 mb-1">Doctor</p>
+                                    <p className="text-xs font-bold text-[var(--text)] dark:text-white truncate">{analysisResult.extractedData.doctorName}</p>
                                   </div>
                                 )}
                                 {analysisResult.extractedData.hospital && (
-                                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
-                                    <p className="text-[8px] font-black uppercase tracking-widest text-emerald-400 mb-1">Clinic</p>
-                                    <p className="text-xs font-bold text-white truncate">{analysisResult.extractedData.hospital}</p>
+                                  <div className="p-4 rounded-2xl bg-[var(--card2)] border border-[var(--border)]">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-1">Clinic</p>
+                                    <p className="text-xs font-bold text-[var(--text)] dark:text-white truncate">{analysisResult.extractedData.hospital}</p>
                                   </div>
                                 )}
                               </div>
-
                               {analysisResult.extractedData.items?.length > 0 && (
                                 <div className="space-y-3">
                                   <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60 mt-4">Detected Findings</p>
                                   {analysisResult.extractedData.items.map((item: string, i: number) => (
-                                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-[var(--card2)] border border-[var(--border)]">
                                       <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                                      <span className="text-xs text-[var(--text2)]">{item}</span>
+                                      <span className="text-xs text-[var(--text)] dark:text-[var(--text2)]">{item}</span>
                                     </div>
                                   ))}
                                 </div>
                               )}
                             </div>
                           )}
-
-                          {analysisResult?.suggestions?.length > 0 && (
-                            <div className="space-y-3">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60 mt-4">Next Steps</p>
-                              {analysisResult.suggestions.map((sug: string, i: number) => {
-                                const isSync = sug.toLowerCase().includes('sync') || sug.toLowerCase().includes('medical records');
-                                return (
-                                  <button
-                                    key={i}
-                                    onClick={() => {
-                                      if (isSync) {
-                                        onAddRecord({
-                                          type: selectedDoc.category === 'report' ? 'Report' : (selectedDoc.category === 'prescription' ? 'Prescription' : 'Other'),
-                                          title: selectedDoc.name,
-                                          doctor: analysisResult.extractedData?.doctorName || 'Unknown',
-                                          date: selectedDoc.date,
-                                          hospital: analysisResult.extractedData?.hospital || 'Private Clinic',
-                                          notes: analysisResult.summary || selectedDoc.notes || '',
-                                          status: 'Completed',
-                                          color: 'indigo',
-                                          fileUrl: selectedDoc.fileData,
-                                          tags: [selectedDoc.category]
-                                        });
-                                        showDoneToast("Insight successfully synced to Medical Records.");
-                                      }
-                                    }}
-                                    className={cn(
-                                      "w-full p-4 rounded-2xl border text-left hover:scale-[1.01] transition-all group",
-                                      isSync ? "bg-emerald-500/10 border-emerald-500/20" : "bg-indigo-500/10 border-indigo-500/20"
-                                    )}
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <span className={cn("text-xs font-bold", isSync ? "text-emerald-400" : "text-indigo-300")}>{sug}</span>
-                                      {isSync ? <CheckCircle2 size={14} className="text-emerald-400" /> : <ChevronRight size={14} className="text-indigo-400 group-hover:translate-x-1 transition-transform" />}
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
+                        </div>
+                      )}
+                      
+                      {analysisResult?.suggestions?.length > 0 && (
+                        <div className="space-y-3 mt-8">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)] opacity-60">Next Steps</p>
+                          {analysisResult.suggestions.map((sug: string, i: number) => {
+                            const isSync = sug.toLowerCase().includes('sync') || sug.toLowerCase().includes('medical records');
+                            return (
+                              <button
+                                key={i}
+                                onClick={() => {
+                                  if (isSync) {
+                                    onAddRecord({
+                                      type: selectedDoc.category === 'report' ? 'Report' : (selectedDoc.category === 'prescription' ? 'Prescription' : 'Other'),
+                                      title: selectedDoc.name,
+                                      doctor: analysisResult.extractedData?.doctorName || 'Unknown',
+                                      date: selectedDoc.date,
+                                      hospital: analysisResult.extractedData?.hospital || 'Private Clinic',
+                                      notes: analysisResult.summary || selectedDoc.notes || '',
+                                      status: 'Completed',
+                                      color: 'indigo',
+                                      fileUrl: selectedDoc.fileData,
+                                      tags: [selectedDoc.category]
+                                    });
+                                    showDoneToast("Insight successfully synced to Medical Records.");
+                                  }
+                                }}
+                                className={cn(
+                                  "w-full p-4 rounded-2xl border text-left hover:scale-[1.01] transition-all group",
+                                  isSync ? "bg-emerald-500/10 border-emerald-500/20" : "bg-indigo-500/10 border-indigo-500/20"
+                                )}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className={cn("text-xs font-bold", isSync ? "text-emerald-600 dark:text-emerald-400" : "text-indigo-600 dark:text-indigo-300")}>{sug}</span>
+                                  {isSync ? <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400" /> : <ChevronRight size={14} className="text-indigo-600 dark:text-indigo-400 group-hover:translate-x-1 transition-transform" />}
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
                   </div>
                 </div>
 
-                <div className="p-8 border-t border-white/10 bg-black/40">
+                <div className="p-8 border-t border-[var(--border)] bg-[var(--bg)]">
                   <div className="flex items-center gap-4 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
-                    <ShieldCheck size={20} className="text-emerald-400" />
+                    <ShieldCheck size={20} className="text-emerald-600 dark:text-emerald-400" />
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Vault Secure</p>
-                      <p className="text-[8px] text-emerald-400/60 font-medium">End-to-end encrypted storage</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Vault Secure</p>
+                      <p className="text-[8px] text-emerald-600 dark:text-emerald-400/60 font-medium">End-to-end encrypted storage</p>
                     </div>
                   </div>
                 </div>
@@ -10232,9 +10526,9 @@ function HealthLockerView({ documents, onAddDocument, onDeleteDocument, onAddRec
       </AnimatePresence>
     </div>
   );
-}
+});
 
-function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
+const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
   const [activeTab, setActiveTab] = useState<'all' | 'reports' | 'rx' | 'scans' | 'meds'>('all');
   const [isUploading, setIsUploading] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<MedicalRecord | null>(null);
@@ -10598,7 +10892,7 @@ function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord
       </AnimatePresence>
     </div>
   );
-}
+});
 
 function ClinicPortal({ appointments, profile, journal, onBook }: { appointments: Appointment[], profile: UserProfile, journal: JournalEntry[], onBook: (appt: Omit<Appointment, 'id'>) => Promise<void> }) {
   const [pin, setPin] = useState('');
@@ -11063,13 +11357,13 @@ function ClinicPortal({ appointments, profile, journal, onBook }: { appointments
             </div>
           </div>
         ) : (
-          <div className="glass border border-white/20 rounded-[48px] p-12 text-center space-y-8 shadow-2xl relative overflow-hidden">
+          <div className="glass border border-[var(--border)] rounded-[48px] p-12 text-center space-y-8 shadow-2xl relative overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent pointer-events-none" />
-            <div className="w-24 h-24 glass-morphism border border-blue-500/20 rounded-[32px] flex items-center justify-center mx-auto text-blue-400 mb-4 shadow-2xl">
+            <div className="w-24 h-24 glass flex items-center justify-center mx-auto text-blue-400 mb-4 shadow-2xl">
               <Lock size={48} />
             </div>
             <div className="space-y-4">
-              <h3 className="font-serif text-3xl sm:text-4xl text-white tracking-tight leading-tight">Physician Portal.</h3>
+              <h3 className="font-serif text-3xl sm:text-4xl text-[var(--text)] dark:text-white tracking-tight leading-tight">Physician Portal.</h3>
               <p className="text-sm text-[var(--muted)] leading-relaxed max-w-sm mx-auto font-medium">Restricted to verified medical professionals. Access clinical dashboards and patient analytics.</p>
             </div>
             <div className="max-w-[280px] mx-auto space-y-4 relative z-10">
@@ -11078,7 +11372,7 @@ function ClinicPortal({ appointments, profile, journal, onBook }: { appointments
                 value={pin}
                 onChange={e => setPin(e.target.value)}
                 placeholder="••••"
-                className="w-full glass-darker border border-white/10 rounded-[28px] p-6 text-center text-4xl tracking-[0.6em] font-serif outline-none focus:ring-4 focus:ring-blue-500/20 transition-all font-black text-blue-400 shadow-inner"
+                className="w-full glass border border-[var(--border)] rounded-[28px] p-6 text-center text-4xl tracking-[0.6em] font-serif outline-none focus:ring-4 focus:ring-blue-500/20 transition-all font-black text-blue-400 shadow-inner"
               />
               <button 
                 onClick={handleLogin}
@@ -11379,19 +11673,19 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
             <Briefcase size={20} />
           </div>
           <div>
-            <h2 className="font-serif text-xl tracking-tight text-white">Workwell Pro</h2>
+            <h2 className="font-serif text-xl tracking-tight text-[var(--text)] dark:text-white">Workwell Pro</h2>
             <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em]">Enterprise Wellness System</p>
           </div>
         </div>
         {isRegistered && (
-          <div className="flex glass-morphism p-1 rounded-xl border border-white/5 shadow-inner">
+          <div className="flex glass p-1 rounded-xl border border-[var(--border)] shadow-inner">
             {['overview', 'challenges', 'benefits'].map(tab => (
               <button 
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
                 className={cn(
                   "px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.2em] transition-all capitalize",
-                  activeTab === tab ? "glass text-[#93f9b9] shadow-lg border border-white/10" : "text-[var(--muted)] hover:text-white"
+                  activeTab === tab ? "glass bg-[var(--bg)] text-[#1d976c] dark:text-[#93f9b9] shadow-lg border border-[var(--border)]" : "text-[var(--muted)] hover:text-[var(--text)]"
                 )}
               >{tab}</button>
             ))}
@@ -11401,13 +11695,13 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
 
       {!isRegistered ? (
         <div className="space-y-8">
-          <div className="glass border border-white/10 rounded-[48px] p-12 text-white space-y-8 shadow-2xl relative overflow-hidden group">
+          <div className="glass border border-[var(--border)] rounded-[48px] p-12 text-[var(--text)] dark:text-white space-y-8 shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-64 h-64 bg-[#1d976c]/10 blur-3xl -mr-24 -mt-24 group-hover:scale-150 transition-transform duration-1000" />
-            <div className="w-24 h-24 glass-morphism border border-teal-500/20 rounded-[32px] flex items-center justify-center text-[#93f9b9] mb-4 rotate-3 group-hover:rotate-0 transition-transform shadow-2xl">
+            <div className="w-24 h-24 glass flex items-center justify-center text-[#93f9b9] mb-4 rotate-3 group-hover:rotate-0 transition-transform shadow-2xl">
               <Building2 size={48} />
             </div>
             <div className="space-y-4">
-              <h3 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight text-white drop-shadow-md">Elevate Team Wellness.</h3>
+              <h3 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight text-[var(--text)] dark:text-white drop-shadow-md">Elevate Team Wellness.</h3>
               <p className="text-sm text-[var(--muted)] leading-relaxed max-w-sm font-medium">Integrate HR platforms, track collective fitness goals, and unlock exclusive enterprise health benefits for your entire organization.</p>
             </div>
             <div className="flex items-center gap-2 pt-4 relative z-10">
@@ -11428,9 +11722,9 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
                 >
                   <div className="absolute inset-0 bg-gradient-to-r from-[#1d976c]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="flex items-center gap-5 text-left relative z-10">
-                    <div className="w-14 h-14 rounded-2xl glass-morphism flex items-center justify-center text-2xl group-hover:scale-110 transition-transform border border-white/5 shadow-inner">🏢</div>
+                    <div className="w-14 h-14 rounded-2xl glass flex items-center justify-center text-2xl group-hover:scale-110 transition-transform border border-[var(--border)] shadow-inner">🏢</div>
                     <div>
-                      <p className="text-base font-serif text-white tracking-tight">{c.name}</p>
+                      <p className="text-base font-serif text-[var(--text)] dark:text-white tracking-tight">{c.name}</p>
                       <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-widest mt-1">{c.employees} Members Registered</p>
                     </div>
                   </div>
@@ -11453,10 +11747,10 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
               <div className="glass border border-white/10 rounded-[40px] p-10 shadow-2xl relative overflow-hidden">
                 <div className="space-y-3 relative z-10">
                   <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[#93f9b9]">Official Enrollment</p>
-                  <h3 className="font-serif text-4xl text-white tracking-tight">{profile.company}</h3>
+                  <h3 className="font-serif text-4xl text-[var(--text)] dark:text-white tracking-tight">{profile.company}</h3>
                   <div className="flex flex-wrap items-center gap-3 mt-6">
-                    <div className="px-4 py-1.5 glass-morphism border border-white/5 text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.2em]">ID: {profile.corporateId}</div>
-                    <div className="px-4 py-1.5 glass-morphism border border-white/5 text-blue-400 rounded-full text-[9px] font-black uppercase tracking-[0.2em]">Verified Employee</div>
+                    <div className="px-4 py-1.5 glass border border-[var(--border)] text-emerald-600 dark:text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.2em]">ID: {profile.corporateId}</div>
+                    <div className="px-4 py-1.5 glass border border-[var(--border)] text-blue-600 dark:text-blue-400 rounded-full text-[9px] font-black uppercase tracking-[0.2em]">Verified Employee</div>
                   </div>
                 </div>
                 <div className="absolute top-0 right-0 w-56 h-56 bg-[#1d976c]/10 rounded-full -mr-16 -mt-16 blur-3xl" />
@@ -11469,7 +11763,7 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
                     <span className="text-xs font-serif text-emerald-400 font-bold">+4.2%</span>
                   </div>
                   <div>
-                    <div className="text-3xl font-serif text-white">82/100</div>
+                    <div className="text-3xl font-serif text-[var(--text)] dark:text-white">82/100</div>
                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] mt-1">Team Vital Matrix</div>
                   </div>
                 </div>
@@ -11479,7 +11773,7 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
                     <span className="text-xs font-serif text-amber-400 font-bold">#14</span>
                   </div>
                   <div>
-                    <div className="text-3xl font-serif text-white">Top 5%</div>
+                    <div className="text-3xl font-serif text-[var(--text)] dark:text-white">Top 5%</div>
                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-[var(--muted)] mt-1">Marketplace Rank</div>
                   </div>
                 </div>
@@ -11488,11 +11782,11 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
               <div className="glass border border-white/5 rounded-[40px] p-8 space-y-6 shadow-2xl relative overflow-hidden group">
                 <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent pointer-events-none" />
                 <div className="flex items-center justify-between relative z-10">
-                  <h4 className="font-serif text-2xl text-white tracking-tight">Department Leaderboard</h4>
+                  <h4 className="font-serif text-2xl text-[var(--text)] dark:text-white tracking-tight">Department Leaderboard</h4>
                   <div className="w-2 h-2 rounded-full bg-orange-500 animate-pulse shadow-lg shadow-orange-500/20" />
                 </div>
                 <div className="space-y-4 relative z-10">
-                  <div className="text-center py-12 glass-morphism border border-dashed border-white/10 rounded-3xl">
+                  <div className="text-center py-12 glass border border-dashed border-[var(--border)] rounded-3xl">
                      <p className="text-sm text-[var(--muted)] font-medium max-w-[200px] mx-auto opacity-60">Synchronizing team biometric aggregates. Data updates every 60 minutes.</p>
                   </div>
                 </div>
@@ -11508,10 +11802,10 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
               <div className="glass border border-teal-500/20 rounded-[32px] p-8 flex items-center justify-between shadow-2xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-32 h-32 bg-teal-500/5 blur-2xl" />
                 <div className="space-y-2 relative z-10">
-                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[#93f9b9]">Financial Rewards</p>
-                  <h4 className="font-serif text-3xl text-white">{formatCurrency(2500)} <span className="opacity-40">Wellness Grant</span></h4>
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-600 dark:text-[#93f9b9]">Financial Rewards</p>
+                  <h4 className="font-serif text-3xl text-[var(--text)] dark:text-white">{formatCurrency(2500)} <span className="opacity-40">Wellness Grant</span></h4>
                 </div>
-                <div className="w-16 h-16 glass-morphism border border-teal-500/20 rounded-2xl flex items-center justify-center text-[#93f9b9] shadow-2xl relative z-10">
+                <div className="w-16 h-16 glass border border-teal-500/20 rounded-2xl flex items-center justify-center text-emerald-600 dark:text-[#93f9b9] shadow-2xl relative z-10">
                   <TrendingUp size={28} />
                 </div>
               </div>
@@ -11521,15 +11815,15 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
                   <div key={c.id} className="glass border border-white/5 rounded-[32px] p-8 space-y-6 shadow-xl relative overflow-hidden group hover:border-white/10 transition-all">
                     <div className="flex justify-between items-start relative z-10">
                       <div className="space-y-1">
-                        <h4 className="font-serif text-2xl text-white tracking-tight">{c.title}</h4>
+                        <h4 className="font-serif text-2xl text-[var(--text)] dark:text-white tracking-tight">{c.title}</h4>
                         <div className="flex items-center gap-3">
                           <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em]">{c.endDate}</p>
-                          <div className="w-1 h-1 rounded-full bg-white/20" />
-                          <p className="text-[10px] text-teal-400 font-black uppercase tracking-[0.2em]">{c.participants} Contending</p>
+                          <div className="w-1 h-1 rounded-full bg-[var(--border)]" />
+                          <p className="text-[10px] text-teal-600 dark:text-teal-400 font-black uppercase tracking-[0.2em]">{c.participants} Contending</p>
                         </div>
                       </div>
                       {c.status === 'joined' ? (
-                        <div className="px-5 py-2 glass-morphism border border-teal-500/30 text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.3em] shadow-lg">Joined</div>
+                      <div className="px-5 py-2 glass border border-teal-500/30 text-emerald-600 dark:text-[#93f9b9] rounded-full text-[9px] font-black uppercase tracking-[0.3em] shadow-lg">Joined</div>
                       ) : (
                         <button onClick={() => handleJoinChallenge(c.id)} className="px-6 py-2.5 bg-gradient-to-r from-teal-500 to-emerald-600 text-white rounded-full text-[10px] font-black uppercase tracking-[0.3em] shadow-2xl shadow-teal-500/30 hover:scale-105 transition-all active:scale-95 border border-white/10">Enroll Now</button>
                       )}
@@ -11539,9 +11833,9 @@ function CorporateHealth({ profile, updateProfile }: { profile: UserProfile, upd
                       <div className="space-y-3 relative z-10">
                         <div className="flex justify-between text-[11px] font-black uppercase tracking-[0.2em]">
                           <span className="text-[var(--muted)]">Personal Objective</span>
-                          <span className="text-white">{Math.round((c.current / c.target) * 100)}%</span>
+                          <span className="text-[var(--text)] dark:text-white">{Math.round((c.current / c.target) * 100)}%</span>
                         </div>
-                        <div className="w-full h-2.5 glass-darker rounded-full p-0.5 overflow-hidden">
+                        <div className="w-full h-2.5 glass border border-[var(--border)] rounded-full p-0.5 overflow-hidden">
                            <motion.div 
                              initial={{ width: 0 }}
                              animate={{ width: `${(c.current / c.target) * 100}%` }}
@@ -11682,7 +11976,7 @@ function MedEducation() {
         </div>
         
         <div className="space-y-4 relative z-10">
-          <h3 className="font-serif text-3xl sm:text-5xl text-white tracking-tight leading-tight">Biomedical Portal.</h3>
+          <h3 className="font-serif text-3xl sm:text-5xl text-[var(--text)] dark:text-white tracking-tight leading-tight">Biomedical Portal.</h3>
           <p className="text-sm text-[var(--muted)] max-w-md mx-auto font-medium leading-relaxed">Veda AI simplifies complex clinical literature into actionable knowledge, from molecular anatomy to advanced diagnostics.</p>
         </div>
 
@@ -11699,7 +11993,7 @@ function MedEducation() {
               value={search} 
               onChange={e => setSearch(e.target.value)}
               placeholder="Search condition, drug, or physiology..." 
-              className="w-full glass-darker border border-white/10 rounded-[28px] py-6 px-8 text-white text-base focus:ring-4 focus:ring-purple-500/20 transition-all font-medium placeholder:text-white/20 shadow-2xl"
+              className="w-full glass border border-[var(--border)] rounded-[28px] py-6 px-8 text-[var(--text)] text-base focus:ring-4 focus:ring-purple-500/20 transition-all font-medium placeholder:text-[var(--muted)] shadow-2xl"
             />
             <button 
               type="submit"
@@ -11847,10 +12141,11 @@ function MedicineScanner() {
       }
     } catch (err: any) {
       console.error("Error accessing camera:", err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDismissedError' || err.message?.includes('dismissed')) {
+      const isDismissed = err.name === 'NotAllowedError' || err.name === 'PermissionDismissedError' || err.message?.toLowerCase().includes('dismissed') || err.message?.toLowerCase().includes('denied');
+      if (isDismissed) {
         setCameraError("Camera permission was dismissed or blocked. Please ensure you allow access. If you're in an iframe, try opening the app in a new tab.");
       } else {
-        setCameraError(`Camera Error: ${err.name}. You can use the upload option below instead.`);
+        setCameraError(`Camera Error: ${err.message || err.name}. You can use the upload option below instead.`);
       }
     }
   };
@@ -12709,7 +13004,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
         </div>
       </div>
 
-      <div className="glass border border-white/10 rounded-[32px] p-6 shadow-xl space-y-6">
+      <div className="glass border border-[var(--border)] rounded-[32px] p-6 shadow-xl space-y-6">
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <h3 className="font-serif text-2xl text-[var(--text)]">Daily Streak</h3>
@@ -12725,12 +13020,12 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
         </div>
       </div>
 
-      <div className="glass border border-white/10 rounded-[32px] p-8 text-center space-y-8 relative overflow-hidden">
+      <div className="glass border border-[var(--border)] rounded-[32px] p-8 text-center space-y-8 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-orange-500/20 to-transparent" />
         
         <div className="space-y-4">
           <div className="space-y-2">
-            <h3 className="font-serif text-2xl">Guided Breathing</h3>
+            <h3 className="font-serif text-2xl text-[var(--text)]">Guided Breathing</h3>
             <p className="text-sm text-[var(--muted)] max-w-xs mx-auto">
               {aiCheckIn || (lastMood <= 2 ? "You've been feeling a bit low. Let's take a moment for yourself." : 
                       lastMood >= 4 ? "You're doing great! Let's maintain this positive energy." :
@@ -12748,7 +13043,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
           {!isLoadingCheckIn && (
             <button 
               onClick={fetchAiCheckIn}
-              className="text-[10px] font-bold text-orange-400 uppercase tracking-widest hover:text-orange-300 transition-colors"
+              className="text-[10px] font-bold text-orange-600 dark:text-orange-400 uppercase tracking-widest hover:text-orange-500 transition-colors"
             >
               Refresh AI Check-in
             </button>
@@ -12762,11 +13057,11 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
               opacity: isBreathing ? (breathPhase === 'Hold' ? 0.8 : 1) : 0.5
             }}
             transition={{ duration: 4, ease: "easeInOut" }}
-            className="w-32 h-32 rounded-full glass-morphism border-2 border-orange-500/40 flex items-center justify-center shadow-2xl shadow-orange-500/10"
+            className="w-32 h-32 rounded-full glass border-2 border-orange-500/40 flex items-center justify-center shadow-2xl shadow-orange-500/10"
           >
             <motion.div 
               animate={{ scale: isBreathing ? 0.8 : 1 }}
-              className="w-24 h-24 rounded-full glass-morphism border border-orange-500/50 flex items-center justify-center"
+              className="w-24 h-24 rounded-full glass border border-orange-500/50 flex items-center justify-center"
             >
               <Wind className="text-orange-500" size={32} />
             </motion.div>
@@ -12791,7 +13086,7 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
           onClick={() => setIsBreathing(!isBreathing)}
           className={cn(
             "px-8 py-3 rounded-full font-bold transition-all shadow-xl active:scale-95",
-            isBreathing ? "glass border border-white/20 text-[var(--text)]" : "bg-orange-500 text-white hover:bg-orange-600 shadow-orange-500/20"
+            isBreathing ? "glass border border-[var(--border)] text-[var(--text)]" : "bg-orange-500 text-white hover:bg-orange-600 shadow-orange-500/20"
           )}
         >
           {isBreathing ? 'Stop Session' : 'Start 4-4-4 Breathing'}
@@ -12799,15 +13094,15 @@ function WellnessView({ journal }: { journal: JournalEntry[] }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="glass border border-white/10 rounded-[32px] p-5 space-y-3 hover:glass transition-all">
-          <div className="w-10 h-10 rounded-lg glass-morphism border border-purple-500/20 flex items-center justify-center text-purple-400">
+        <div className="glass border border-[var(--border)] rounded-[32px] p-5 space-y-3 hover:glass transition-all">
+          <div className="w-10 h-10 rounded-lg glass border border-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400">
             <Moon size={20} />
           </div>
           <h4 className="font-bold text-sm">Sleep Hygiene</h4>
           <p className="text-xs text-[var(--muted)]">Tips for better rest based on your energy levels.</p>
         </div>
-        <div className="glass border border-white/10 rounded-[32px] p-5 space-y-3 hover:glass transition-all">
-          <div className="w-10 h-10 rounded-lg glass-morphism border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+        <div className="glass border border-[var(--border)] rounded-[32px] p-5 space-y-3 hover:glass transition-all">
+          <div className="w-10 h-10 rounded-lg glass border border-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
             <Smile size={20} />
           </div>
           <h4 className="font-bold text-sm">Gratitude Log</h4>

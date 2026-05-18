@@ -1,7 +1,17 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { UserProfile, JournalEntry } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const MODEL_NAME = "gemini-flash-latest";
+
+function getAI() {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+                 
+  if (!apiKey || apiKey === "undefined" || apiKey === "") {
+    console.warn("Gemini API key is not configured. Please ensure GEMINI_API_KEY is set in Settings > Secrets.");
+    throw new Error("Gemini API key is not configured.");
+  }
+  return new GoogleGenAI({ apiKey });
+}
 
 export const SYS_PROMPT = `You are Veda, a warm, knowledgeable, and calm AI health companion with persistent memory. You remember past conversations and patient details across sessions. You help people understand their health better. When a patient says 'remember that...' or 'याद रखो', acknowledge it warmly. Reference their profile and past context naturally to feel like a continuous caring relationship.
 
@@ -16,19 +26,55 @@ RULES:
 
 export async function callGemini(prompt: string, systemInstruction: string = SYS_PROMPT) {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      model: MODEL_NAME,
+      contents: prompt,
       config: {
         systemInstruction,
-        maxOutputTokens: 2048,
-        temperature: 0.7,
-      },
+      }
     });
-
     return response.text || "I'm sorry, I couldn't generate a response.";
   } catch (error) {
     console.error("Gemini API error:", error);
+    throw error;
+  }
+}
+
+export async function getChatResponse(message: string, history: any[], profile: UserProfile) {
+  const systemInstruction = `${SYS_PROMPT}
+  
+  Patient Profile: ${profile.name}, ${profile.age}yrs, ${profile.sex}. 
+  Medical Conditions: ${profile.conditions.join(', ')}. 
+  Recent Medicines: ${profile.medicines.map(m => m.name).join(', ')}.`;
+
+  try {
+    const ai = getAI();
+    // For robust history handling, we'll use generateContent with the history mapped to contents
+    const messages = history ? history.map(h => ({
+      role: h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.content || h.parts?.[0]?.text || '' }]
+    })) : [];
+    
+    // Append the new message
+    messages.push({ role: 'user', parts: [{ text: message }] });
+
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: messages,
+      config: {
+        systemInstruction,
+        temperature: 0.3,
+      }
+    });
+
+    return response.text || "I'm sorry, I couldn't generate a response.";
+  } catch (error: any) {
+    console.error("Health Chat Error details:", {
+      message: error.message,
+      status: error.status,
+      details: error.details,
+    });
     throw error;
   }
 }
@@ -46,44 +92,42 @@ export async function analyzePrescription(base64Data: string) {
   Return as valid JSON.`;
 
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
       medications: {
-        type: "array",
+        type: Type.ARRAY,
         items: {
-          type: "object",
+          type: Type.OBJECT,
           properties: {
-            name: { type: "string" },
-            dose: { type: "string" },
-            dailyFrequency: { type: "number" },
-            duration: { type: "number" },
-            instructions: { type: "string" }
+            name: { type: Type.STRING },
+            dose: { type: Type.STRING },
+            dailyFrequency: { type: Type.INTEGER },
+            duration: { type: Type.INTEGER },
+            instructions: { type: Type.STRING }
           },
           required: ["name", "dose", "dailyFrequency"]
         }
       },
-      summary: { type: "string" }
+      summary: { type: Type.STRING }
     },
     required: ["medications", "summary"]
-  } as const;
+  };
 
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType: "image/jpeg", data: base64Data } },
-            { text: prompt }
-          ]
-        }
-      ],
+      model: MODEL_NAME,
+      contents: {
+        parts: [
+          { inlineData: { mimeType: "image/jpeg", data: base64Data.split(',')[1] || base64Data } },
+          { text: prompt }
+        ]
+      },
       config: {
         systemInstruction: "You are a clinical pharmacist. return only JSON. No markdown blocks.",
         responseMimeType: "application/json",
-        responseSchema: schema as any,
-      },
+        responseSchema: schema,
+      }
     });
 
     return JSON.parse(response.text || "{}");
@@ -93,7 +137,7 @@ export async function analyzePrescription(base64Data: string) {
   }
 }
 
-export async function getWellnessResponse(message: string, history: { role: 'user' | 'model', parts: any[] }[], profile: UserProfile) {
+export async function getWellnessResponse(message: string, history: any[], profile: UserProfile) {
   const systemInstruction = `You are Veda's Wellness Coach. You are an empathetic, calm, and insightful mental health companion.
   Your goals:
   - Provide emotional support and active listening.
@@ -105,41 +149,49 @@ export async function getWellnessResponse(message: string, history: { role: 'use
   - Keep responses concise but meaningful.`;
 
   try {
-    const chat = ai.chats.create({
-      model: "gemini-3-flash-preview",
-      history: history as any,
+    const ai = getAI();
+    const messages = history ? history.map(h => ({
+      role: h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.content || h.parts?.[0]?.text || '' }]
+    })) : [];
+    
+    messages.push({ role: 'user', parts: [{ text: message }] });
+
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: messages,
       config: {
-        systemInstruction: systemInstruction,
-        temperature: 0.7,
+        systemInstruction,
+        temperature: 0.4,
       }
     });
 
-    const result = await chat.sendMessage({ message });
-    return result.text || "I'm sorry, I couldn't generate a response.";
-  } catch (error) {
-    console.error("Wellness Chat Error:", error);
+    return response.text || "I'm sorry, I couldn't generate a response.";
+  } catch (error: any) {
+    console.error("Wellness Chat Error details:", {
+      message: error.message,
+      status: error.status,
+      details: error.details,
+    });
     throw error;
   }
 }
 
 export async function analyzeImage(base64Data: string, prompt: string, mimeType: string = "image/jpeg") {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType, data: base64Data } },
-            { text: prompt }
-          ]
-        }
-      ],
+      model: MODEL_NAME,
+      contents: {
+        parts: [
+          { inlineData: { mimeType, data: base64Data.split(',')[1] || base64Data } },
+          { text: prompt }
+        ]
+      },
       config: {
         systemInstruction: SYS_PROMPT,
-        maxOutputTokens: 2048,
         temperature: 0.3,
-      },
+      }
     });
 
     return response.text || "I'm sorry, I couldn't analyze the image.";
@@ -151,48 +203,49 @@ export async function analyzeImage(base64Data: string, prompt: string, mimeType:
 
 export async function analyzeSymptoms(symptom: string, duration: string, severity: number, profile: UserProfile) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
       urgency: { 
-        type: "string", 
+        type: Type.STRING, 
         enum: ["routine", "urgent", "emergency"], 
         description: "How quickly the user should seek medical attention." 
       },
-      summary: { type: "string", description: "Brief overview of the concern." },
+      summary: { type: Type.STRING, description: "Brief overview of the concern." },
       likelyCauses: {
-        type: "array",
+        type: Type.ARRAY,
         items: {
-          type: "object",
+          type: Type.OBJECT,
           properties: {
-            condition: { type: "string" },
-            likelihood: { type: "string", enum: ["High", "Moderate", "Low"] },
-            explanation: { type: "string" }
+            condition: { type: Type.STRING },
+            likelihood: { type: Type.STRING, enum: ["High", "Moderate", "Low"] },
+            explanation: { type: Type.STRING }
           },
           required: ["condition", "likelihood", "explanation"]
         }
       },
-      recommendedActions: { type: "array", items: { type: "string" }, description: "Specific steps the user should take." },
-      redFlags: { type: "array", items: { type: "string" }, description: "Symptoms that indicate emergency care is needed." },
-      homeCareTips: { type: "array", items: { type: "string" }, description: "Ways to manage symptoms at home." }
+      recommendedActions: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Specific steps the user should take." },
+      redFlags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Symptoms that indicate emergency care is needed." },
+      homeCareTips: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Ways to manage symptoms at home." }
     },
     required: ["urgency", "summary", "likelyCauses", "recommendedActions", "redFlags"]
-  } as const;
+  };
 
   const prompt = `Patient reports: ${symptom}. Duration: ${duration}. Severity: ${severity}/10. Profile: ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}. Analyze these symptoms to provide likely causes, urgency, and clinical guidance. Return as valid JSON.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.3,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Symptom Analysis Error:", error);
     throw error;
@@ -201,27 +254,27 @@ export async function analyzeSymptoms(symptom: string, duration: string, severit
 
 export async function generateSmartMedicationSchedule(profile: UserProfile, additionalInfo?: string) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
       reminders: {
-        type: "array",
+        type: Type.ARRAY,
         items: {
-          type: "object",
+          type: Type.OBJECT,
           properties: {
-            name: { type: "string" },
-            dose: { type: "string" },
-            time: { type: "string", description: "HH:mm format" },
-            freq: { type: "string", enum: ["Daily", "Weekly", "Monthly", "Once"] },
-            color: { type: "string", enum: ["indigo", "emerald", "rose", "amber", "sky", "purple"] },
-            note: { type: "string" }
+            name: { type: Type.STRING },
+            dose: { type: Type.STRING },
+            time: { type: Type.STRING, description: "HH:mm format" },
+            freq: { type: Type.STRING, enum: ["Daily", "Weekly", "Monthly", "Once"] },
+            color: { type: Type.STRING, enum: ["indigo", "emerald", "rose", "amber", "sky", "purple"] },
+            note: { type: Type.STRING }
           },
           required: ["name", "dose", "time", "freq", "color"]
         }
       },
-      wellnessTips: { type: "array", items: { type: "string" } }
+      wellnessTips: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
     required: ["reminders"]
-  } as const;
+  };
 
   const medsText = profile.medicines.map(m => `${m.name} (${m.dose}), frequency: ${m.dailyFrequency}x daily`).join('\n');
   const prompt = `Based on the following patient profile and medications, generate a smart, safe, and logical medication schedule.
@@ -233,27 +286,22 @@ export async function generateSmartMedicationSchedule(profile: UserProfile, addi
   
   Additional context: ${additionalInfo || 'None'}
   
-  Requirements:
-  - Space out doses logically (e.g., if 2x daily, set morning and evening).
-  - Assign distinct colors to different medicines.
-  - Add clinical notes (e.g., "Take with food", "Avoid dairy").
-  - Ensure times are in 24h HH:mm format.
-  
   Return as valid JSON.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.2,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Schedule Generation Error:", error);
     throw error;
@@ -262,50 +310,51 @@ export async function generateSmartMedicationSchedule(profile: UserProfile, addi
 
 export async function analyzeLabReport(base64Data?: string, textContent?: string) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
-      summary: { type: "string", description: "Plain English summary of the overall report." },
+      summary: { type: Type.STRING, description: "Plain English summary of the overall report." },
       parameters: {
-        type: "array",
+        type: Type.ARRAY,
         items: {
-          type: "object",
+          type: Type.OBJECT,
           properties: {
-            parameter: { type: "string" },
-            value: { type: "string" },
-            range: { type: "string" },
-            status: { type: "string", enum: ["normal", "low", "high", "critical"] },
-            explanation: { type: "string" }
+            parameter: { type: Type.STRING },
+            value: { type: Type.STRING },
+            range: { type: Type.STRING },
+            status: { type: Type.STRING, enum: ["normal", "low", "high", "critical"] },
+            explanation: { type: Type.STRING }
           },
           required: ["parameter", "value", "status"]
         }
       },
-      dietarySuggestions: { type: "array", items: { type: "string" } },
-      lifestyleSuggestions: { type: "array", items: { type: "string" } },
-      followUpQuestions: { type: "array", items: { type: "string" } },
+      dietarySuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+      lifestyleSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+      followUpQuestions: { type: Type.ARRAY, items: { type: Type.STRING } },
     },
     required: ["summary", "parameters", "followUpQuestions"]
-  } as const;
+  };
 
   const prompt = "Analyze this lab report. Extract values and explain them in plain English. Highlight out-of-range results.";
 
   try {
     const parts: any[] = [];
-    if (base64Data) parts.push({ inlineData: { mimeType: "image/jpeg", data: base64Data } });
+    if (base64Data) parts.push({ inlineData: { mimeType: "image/jpeg", data: base64Data.split(',')[1] || base64Data } });
     if (textContent) parts.push({ text: `Report text content: ${textContent}` });
     parts.push({ text: prompt });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.2,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Lab Report Analysis Error:", error);
     throw error;
@@ -314,29 +363,30 @@ export async function analyzeLabReport(base64Data?: string, textContent?: string
 
 export async function analyzeJournal(notes: string) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
-      stressLevel: { type: "number" },
-      burnoutRisk: { type: "string", enum: ["low", "moderate", "high"] },
-      summary: { type: "string" },
-      recommendation: { type: "string" }
+      stressLevel: { type: Type.NUMBER },
+      burnoutRisk: { type: Type.STRING, enum: ["low", "moderate", "high"] },
+      summary: { type: Type.STRING },
+      recommendation: { type: Type.STRING }
     },
     required: ["stressLevel", "burnoutRisk", "summary", "recommendation"]
-  } as const;
+  };
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: `Analyze the following journal entry for mood, stress level, and burnout risk: ${notes}` }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: `Analyze the following journal entry for mood, stress level, and burnout risk: ${notes}` }] },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.3,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Journal Analysis Error:", error);
     throw error;
@@ -345,34 +395,35 @@ export async function analyzeJournal(notes: string) {
 
 export async function generateHealthRoadmap(profile: UserProfile) {
   const schema = {
-    type: "array",
+    type: Type.ARRAY,
     items: {
-      type: "object",
+      type: Type.OBJECT,
       properties: {
-        title: { type: "string" },
-        description: { type: "string" },
-        month: { type: "string" },
-        priority: { type: "string", enum: ["high", "medium", "low"] }
+        title: { type: Type.STRING },
+        description: { type: Type.STRING },
+        month: { type: Type.STRING },
+        priority: { type: Type.STRING, enum: ["high", "medium", "low"] }
       },
       required: ["title", "description", "month", "priority"]
     }
-  } as const;
+  };
 
   const prompt = `Based on this user profile: Age: ${profile.age}, Sex: ${profile.sex}, Conditions: ${profile.conditions.join(', ')}. Generate a personalized preventive health roadmap for the next 12 months.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.3,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "[]");
+    return JSON.parse(result.text || "[]");
   } catch (error) {
     console.error("Roadmap Generation Error:", error);
     throw error;
@@ -383,16 +434,17 @@ export async function generateCallSummary(callTranscript: string) {
   const prompt = `Summarize this tele-consultation call into key points: patient concerns, doctor's diagnosis, and prescribed actions/medications. Transcript: ${callTranscript}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: SYS_PROMPT,
         temperature: 0.2,
-      },
+      }
     });
 
-    return response.text || "No summary available.";
+    return result.text || "No summary available.";
   } catch (error) {
     console.error("Call Summary Error:", error);
     throw error;
@@ -401,42 +453,42 @@ export async function generateCallSummary(callTranscript: string) {
 
 export async function analyzeFood(base64Data: string, profile: UserProfile) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
-      dishName: { type: "string" },
-      explanation: { type: "string" },
-      protein: { type: "number" },
-      carbs: { type: "number" },
-      fats: { type: "number" },
-      calories: { type: "number" },
-      healthTips: { type: "array", items: { type: "string" } },
-      warnings: { type: "array", items: { type: "string" } }
+      dishName: { type: Type.STRING },
+      explanation: { type: Type.STRING },
+      protein: { type: Type.NUMBER },
+      carbs: { type: Type.NUMBER },
+      fats: { type: Type.NUMBER },
+      calories: { type: Type.NUMBER },
+      healthTips: { type: Type.ARRAY, items: { type: Type.STRING } },
+      warnings: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
     required: ["dishName", "calories", "protein", "carbs", "fats", "healthTips"]
-  } as const;
+  };
 
   const context = `User Profile: ${profile.age}yrs, ${profile.sex}. Conditions: ${profile.conditions.join(', ')}.`;
   const prompt = `Identify the meal in this image and estimate nutrition. CONTEXT: ${context}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ 
-        role: "user", 
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: {
         parts: [
-          { inlineData: { mimeType: "image/jpeg", data: base64Data } },
+          { inlineData: { mimeType: "image/jpeg", data: base64Data.split(',')[1] || base64Data } },
           { text: prompt }
-        ] 
-      }],
+        ]
+      },
       config: {
         systemInstruction: SYS_PROMPT,
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.2,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Food Analysis Error:", error);
     throw error;
@@ -445,48 +497,46 @@ export async function analyzeFood(base64Data: string, profile: UserProfile) {
 
 export async function analyzeLockerDocument(base64Data: string, mimeType: string = "image/jpeg") {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
-      category: { type: "string", enum: ["prescription", "scan", "report", "insurance", "other"] },
-      name: { type: "string" },
-      summary: { type: "string" },
+      category: { type: Type.STRING, enum: ["prescription", "scan", "report", "insurance", "other"] },
+      name: { type: Type.STRING },
+      summary: { type: Type.STRING },
       extractedData: {
-        type: "object",
+        type: Type.OBJECT,
         properties: {
-          doctorName: { type: "string" },
-          hospital: { type: "string" },
-          date: { type: "string" },
-          items: { type: "array", items: { type: "string" } }
+          doctorName: { type: Type.STRING },
+          hospital: { type: Type.STRING },
+          date: { type: Type.STRING },
+          items: { type: Type.ARRAY, items: { type: Type.STRING } }
         }
       },
-      suggestions: { type: "array", items: { type: "string" } }
+      suggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
     },
     required: ["category", "name", "summary", "extractedData"]
-  } as const;
+  };
 
   const prompt = `Analyze this health document. Detect category, provide name, summary, and extract key data.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType, data: base64Data.split(',')[1] || base64Data } },
-            { text: prompt }
-          ]
-        }
-      ],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: {
+        parts: [
+          { inlineData: { mimeType, data: base64Data.split(',')[1] || base64Data } },
+          { text: prompt }
+        ]
+      },
       config: {
         systemInstruction: "You are a clinical document analyzer. Return only JSON.",
         responseMimeType: "application/json",
-        responseSchema: schema as any,
+        responseSchema: schema,
         temperature: 0.1,
-      },
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Locker Analysis Error:", error);
     throw error;
@@ -496,30 +546,31 @@ export async function analyzeLockerDocument(base64Data: string, mimeType: string
 export async function generateAppointmentBriefing(journal: JournalEntry[], appointmentType: string) {
   const lastEntries = journal.slice(-10);
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
-      summary: { type: "string" },
-      keySymptoms: { type: "array", items: { type: "string" } },
-      suggestedQuestions: { type: "array", items: { type: "string" } },
-      lifestyleNotes: { type: "string" }
+      summary: { type: Type.STRING },
+      keySymptoms: { type: Type.ARRAY, items: { type: Type.STRING } },
+      suggestedQuestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+      lifestyleNotes: { type: Type.STRING }
     },
     required: ["summary", "keySymptoms", "suggestedQuestions"]
-  } as const;
+  };
 
   const prompt = `Prepare a concise briefing for a ${appointmentType} visit based on recent health journal entries: ${JSON.stringify(lastEntries)}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: "You are a clinical preparation assistant. Summarize data succinctly.",
         responseMimeType: "application/json",
-        responseSchema: schema as any,
-      },
+        responseSchema: schema,
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Briefing Generation Error:", error);
     throw error;
@@ -528,38 +579,39 @@ export async function generateAppointmentBriefing(journal: JournalEntry[], appoi
 
 export async function generatePostVisitChecklist(notes: string) {
   const schema = {
-    type: "object",
+    type: Type.OBJECT,
     properties: {
       tasks: { 
-        type: "array", 
+        type: Type.ARRAY, 
         items: { 
-          type: "object",
+          type: Type.OBJECT,
           properties: {
-            title: { type: "string" },
-            priority: { type: "string", enum: ["high", "medium", "low"] },
-            deadline: { type: "string" }
+            title: { type: Type.STRING },
+            priority: { type: Type.STRING, enum: ["high", "medium", "low"] },
+            deadline: { type: Type.STRING }
           }
         }
       },
-      nextAppointmentSuggestion: { type: "string" }
+      nextAppointmentSuggestion: { type: Type.STRING }
     },
     required: ["tasks"]
-  } as const;
+  };
 
   const prompt = `Convert these record notes into a structured checklist: ${notes}`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const ai = getAI();
+    const result = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: { parts: [{ text: prompt }] },
       config: {
         systemInstruction: "You are a post-visit health coordinator. Extract actionable tasks.",
         responseMimeType: "application/json",
-        responseSchema: schema as any,
-      },
+        responseSchema: schema,
+      }
     });
 
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(result.text || "{}");
   } catch (error) {
     console.error("Post-Visit Checklist Error:", error);
     throw error;

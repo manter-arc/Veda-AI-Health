@@ -10,6 +10,10 @@ self.addEventListener('push', (event) => {
   );
 });
 
+self.addEventListener('fetch', (event) => {
+  // Required for PWA install prompt in some browsers
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil(
