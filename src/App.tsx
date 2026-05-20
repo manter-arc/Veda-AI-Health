@@ -122,7 +122,15 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  User as FirebaseUser,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail
+} from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocFromServer, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { MapContainer, TileLayer, Marker, Popup, useMap as useLeafletMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -727,24 +735,11 @@ function AppContent() {
     }
   };
 
-  const handleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-      setMode('home'); // Redirect to dashboard
-    } catch (error: any) {
-      if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
-        return;
-      }
-      
-      console.error("Login failed", error);
-      
-      if (error.code === 'auth/network-request-failed') {
-        showErrorToast("Network Error: Please check your internet or disable Ad-blockers.");
-      } else if (error.code === 'auth/popup-blocked') {
-        showErrorToast("Popup Blocked: Please click 'Allow Popups' in your browser's address bar.");
-      } else {
-        showErrorToast(`Login failed: ${error.message}`);
-      }
+  const handleLogin = () => {
+    if (user) {
+      setMode('home');
+    } else {
+      setMode('auth');
     }
   };
 
@@ -983,7 +978,7 @@ function AppContent() {
           <div className="flex items-center gap-4">
             <button 
               onClick={() => setMode('auth')} 
-              className="hidden sm:block px-6 py-2 glass-pill text-[var(--text2)] font-black text-[12px] uppercase tracking-wider hover:text-[var(--teal)] transition-all border-none hover:bg-[var(--teal-glow)]"
+              className="px-6 py-2 glass-pill text-[var(--text2)] font-black text-[12px] uppercase tracking-wider hover:text-[var(--teal)] transition-all border-none hover:bg-[var(--teal-glow)]"
             >
               Sign In
             </button>
@@ -1923,6 +1918,10 @@ function AppContent() {
     </>
   );
 
+  if (mode === 'auth') return (
+    <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} isLightMode={isLightMode} />
+  );
+
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)] selection:bg-[var(--teal)] selection:text-[#020f0c]">
         {/* Skip to content link for accessibility */}
@@ -2048,7 +2047,6 @@ function AppContent() {
                 {mode === 'teleconsult' && <TeleconsultView />}
                 {mode === 'bmi' && <BMIView profile={profile} />}
                 {mode === 'sos' && <SOSView profile={profile} onBack={() => setMode('home')} onOpenProfile={() => setMode('profile')} />}
-                {mode === 'auth' && <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} isLightMode={isLightMode} />}
                 {mode === 'privacy' && <PrivacyView />}
                 {mode === 'trust' && <TrustCenter />}
                 {mode === 'wellness' && <WellnessView journal={journal} />}
@@ -12340,6 +12338,7 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
 
   const handleSocialLogin = async (provider: any, name: string) => {
     try {
+      setLoading(name);
       setError(null);
       await signInWithPopup(auth, provider);
       onLogin();
@@ -12347,7 +12346,6 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
       if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
         return;
       }
-      
       console.error(`${name} sign-in failed`, err);
       
       if (err.code === 'auth/popup-blocked') {
@@ -12357,6 +12355,68 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
       } else {
         setError(err.message || "An unexpected error occurred.");
       }
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleEmailAuth = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!email || !password) {
+      setError("Please enter both email and password.");
+      return;
+    }
+    
+    try {
+      setLoading(isSignUp ? 'signup' : 'login');
+      setError(null);
+      if (isSignUp) {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+      onLogin();
+    } catch (err: any) {
+      // Don't log expected validation errors to console.error
+      if (err.code !== 'auth/user-not-found' && 
+          err.code !== 'auth/wrong-password' && 
+          err.code !== 'auth/email-already-in-use' &&
+          err.code !== 'auth/invalid-credential') {
+        console.error("Email auth failed", err);
+      } else {
+        console.log("Auth validation error:", err.code);
+      }
+
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        setError("Invalid email or password. Please try again.");
+      } else if (err.code === 'auth/email-already-in-use') {
+        setError("This email is already registered. Please login instead.");
+      } else if (err.code === 'auth/weak-password') {
+        setError("Password is too weak. Please use at least 6 characters.");
+      } else if (err.code === 'auth/invalid-email') {
+        setError("Please enter a valid email address.");
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setError("Email/Password login is not enabled. Please enable it in the Firebase Console (Authentication > Sign-in method).");
+      } else {
+        setError(err.message?.replace('Firebase: ', '').replace('Error (auth/', '').replace(').', '') || "Authentication failed.");
+      }
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email) {
+      setError("Please enter your email address to reset password.");
+      return;
+    }
+    try {
+      setLoading('reset');
+      await sendPasswordResetEmail(auth, email);
+      setError("Password reset email sent! Check your inbox.");
+    } catch (err: any) {
+      console.error("Reset failed", err);
+      setError(err.message || "Failed to send reset email.");
     } finally {
       setLoading(null);
     }
@@ -12458,8 +12518,24 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
             </button>
           </div>
 
-          {/* Input Fields */}
-          <div className="space-y-3">
+          {/* Email/Password Form */}
+          <form onSubmit={handleEmailAuth} className="space-y-3">
+            {error && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={cn(
+                  "p-4 rounded-2xl text-[13px] font-medium border flex items-start gap-3",
+                  error.includes("sent") || error.includes("Success")
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500"
+                    : "bg-rose-500/10 border-rose-500/20 text-rose-500"
+                )}
+              >
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </motion.div>
+            )}
+
             <div className="relative group">
               <Mail className={cn(
                 "absolute left-5 top-1/2 -translate-y-1/2 transition-colors",
@@ -12504,29 +12580,41 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
               </button>
             </div>
 
-            <button className="w-full text-right py-1">
-              <span className={cn(
-                "text-[13px] font-bold transition-colors",
-                isLightMode ? "text-teal-600 hover:text-teal-700" : "text-teal-400 hover:text-teal-300"
-              )}>Forgot Password?</span>
-            </button>
-          </div>
+            {!isSignUp && (
+              <button 
+                type="button"
+                onClick={handleForgotPassword}
+                className="w-full text-right py-1"
+              >
+                <span className={cn(
+                  "text-[13px] font-bold transition-colors",
+                  isLightMode ? "text-teal-600 hover:text-teal-700" : "text-teal-400 hover:text-teal-300"
+                )}>Forgot Password?</span>
+              </button>
+            )}
 
-          {/* Primary Action */}
-          <div className="space-y-6">
             <button 
-              onClick={onLogin}
+              type="submit"
+              disabled={!!loading}
               className={cn(
-                "w-full py-5 font-bold text-base rounded-2xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all border shadow-lg",
+                "w-full py-5 font-bold text-base rounded-2xl flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all border shadow-lg disabled:opacity-50 disabled:cursor-not-allowed mt-4",
                 isLightMode 
                   ? "bg-teal-600 text-white border-white/20 shadow-teal-700/10" 
                   : "bg-[#14b8a6] text-[#05080a] border-white/10 shadow-[0_0_25px_rgba(20,184,166,0.3)]"
               )}
             >
-              {isSignUp ? 'Sign Up' : 'Login'} <ArrowRight size={18} className="mt-0.5" />
+              {(loading === 'login' || loading === 'signup') ? (
+                <RefreshCw className="animate-spin" size={20} />
+              ) : (
+                <>
+                  {isSignUp ? 'Sign Up' : 'Login'} <ArrowRight size={18} className="mt-0.5" />
+                </>
+              )}
             </button>
+          </form>
 
-            {/* Separator */}
+          {/* Social Logins */}
+          <div className="space-y-6 pt-2">
             <div className="relative flex items-center justify-center">
               <div className={cn(
                 "absolute inset-0 flex items-center",
@@ -12534,11 +12622,10 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
               )}><div className={cn("w-full border-t", isLightMode ? "border-slate-300" : "border-white/5")}></div></div>
               <span className={cn(
                 "relative px-4 text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
-                isLightMode ? "text-slate-400 bg-slate-50" : "text-[#8fa3ad]/40 bg-[#05080a]"
+                isLightMode ? "text-slate-400 bg-slate-100" : "text-[#8fa3ad]/40 bg-[#05080a]"
               )}>or continue with</span>
             </div>
 
-            {/* Social Logins */}
             <div className="grid grid-cols-2 gap-4">
               <button 
                 onClick={() => handleSocialLogin(googleProvider, 'Google')}
@@ -12568,19 +12655,6 @@ function AuthView({ onLogin, onBack, isLightMode }: { onLogin: () => void, onBac
             </div>
           </div>
         </div>
-
-        {error && (
-          <motion.div 
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className={cn(
-              "p-4 border rounded-xl text-center",
-              isLightMode ? "bg-red-50 border-red-200 shadow-sm" : "bg-red-500/10 border-red-500/20"
-            )}
-          >
-            <p className={cn("text-xs font-medium", isLightMode ? "text-red-700" : "text-red-400")}>{error}</p>
-          </motion.div>
-        )}
 
         <button 
           onClick={onBack}

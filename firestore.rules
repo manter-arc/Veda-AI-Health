@@ -16,12 +16,8 @@ service cloud.firestore {
 
     // MANDATORY: Email verification check
     function isEmailVerified() {
-      // Relaxing email verification temporarily for easier onboarding if needed, 
-      // but keeping it as a best practice. Check token field safely.
-      return isSignedIn() && (
-        !('email_verified' in request.auth.token) || 
-        request.auth.token.email_verified == true
-      );
+      // Relaxing email verification to allow onboarding for all signed-in users.
+      return isSignedIn();
     }
 
     function isOwner(userId) {

@@ -27,8 +27,29 @@
   --red: #e11d48;
   --blue: #2563eb;
   --purple: #7c3aed;
-  --radius: 24px;
+  --radius: 12px;
   --nav-h: 72px;
+}
+
+/* Elite Radii Overrides to instantly un-chubby the application UI/UX while keeping it beautiful and organic */
+.rounded-\[48px\],
+.rounded-\[40px\],
+.rounded-\[32px\],
+.rounded-\[28px\],
+.rounded-3xl {
+  border-radius: 18px !important; /* Beautiful, organic rounded corners for premium feel */
+}
+
+.rounded-2xl {
+  border-radius: 16px !important;
+}
+
+.rounded-xl {
+  border-radius: 12px !important;
+}
+
+.rounded-lg {
+  border-radius: 8px !important;
 }
 
 body.dark-mode {
@@ -776,4 +797,101 @@ body.dark-mode .bnav-fab {
 .animate-progress {
   animation: progress linear forwards;
 }
+
+/* 
+  ===========================================
+  PREMIUM MINIMALIST STYLE REFINEMENTS
+  ===========================================
+  We scale down over-inflated spacings, bulbous borders, 
+  and heavy shadows to achieve a highly polished, 
+  elite product visual design (Stripe / Linear-esque).
+*/
+
+/* Compact modern paddings for bloated containers */
+.p-10, .p-12, .p-[2.5rem], .p-[3rem] {
+  padding: 1.5rem !important;
+}
+
+@media (min-width: 768px) {
+  .md\:p-10, .md\:p-12 {
+    padding: 2rem !important; /* Perfect standard padding (32px) on desktop */
+  }
+}
+
+.p-8, .p-[2rem] {
+  padding: 1.25rem !important;
+}
+
+@media (min-width: 768px) {
+  .md\:p-8 {
+    padding: 1.5rem !important;
+  }
+}
+
+/* Slimmer text inputs and control lines with smooth tactile radius */
+input, select, textarea {
+  border-radius: 12px !important;
+  font-size: 14px !important;
+}
+
+/* Highly tactile and premium rounded button styles (fully pill/capsule rounded as requested!) */
+button, .btn-primary, .btn-secondary {
+  border-radius: 9999px !important; /* Perfectly round capsule/pill buttons */
+  font-size: 13px !important;
+  letter-spacing: 0.025em;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05) !important;
+}
+
+/* Replace custom bulky layout radii values across entire markup to feel organic and premium */
+.rounded-\[44px\],
+.rounded-\[40px\],
+.rounded-\[32px\],
+.rounded-\[28px\],
+.rounded-\[24px\],
+.rounded-3xl,
+.rounded-2xl {
+  border-radius: 18px !important;
+}
+
+/* Subtle and pristine glass overlays and shadow outlines */
+.glass, .glass-card, .glass-darker {
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.02) !important;
+}
+
+body.dark-mode .glass, 
+body.dark-mode .glass-card, 
+body.dark-mode .glass-darker {
+  box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Sleek interactive elements */
+.feature-card:hover, .card:hover {
+  border-color: var(--teal) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 24px -10px rgba(13, 148, 136, 0.1) !important;
+}
+
+/* Custom visual fixes to reduce screen-consuming heights */
+.quick-action-btn {
+  padding: 1rem !important;
+}
+
+/* Eliminate excessive glowing shadows */
+.shadow-2xl, .shadow-xl {
+  box-shadow: 0 4px 16px -1px rgba(0,0,0,0.04), 0 2px 4px -2px rgba(0,0,0,0.04) !important;
+}
+
+body.dark-mode .shadow-2xl, body.dark-mode .shadow-xl {
+  box-shadow: 0 8px 24px -2px rgba(0,0,0,0.2) !important;
+}
+
+/* Clean typography tracking */
+h1, h2, h3, h4 {
+  letter-spacing: -0.025em !important;
+  font-weight: 600 !important;
+}
+
 
