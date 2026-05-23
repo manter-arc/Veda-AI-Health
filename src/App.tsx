@@ -119,6 +119,7 @@ import { cn, formatMsg, formatCurrency, formatCoverage } from './lib/utils';
 import { TrendsInsights } from './components/TrendsInsights';
 import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
+import { PageWrapper, StaggerContainer, StaggerItem } from './components/PageWrapper';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
@@ -1623,7 +1624,7 @@ function AppContent() {
   const renderHeader = () => {
     if (mode === 'chat') return null;
     return (
-    <header role="banner" className="sticky top-0 z-50 glass-header px-4 h-[72px] flex items-center justify-between md:px-6">
+    <header role="banner" className="sticky top-0 z-50 glass-header px-4 h-[72px] flex items-center justify-between md:px-6 overflow-x-auto scrollbar-none flex-nowrap">
       <div className="flex items-center gap-4 shrink-0">
         <button onClick={toggleSidebar} aria-label="Toggle Side Menu" className="p-2.5 glass-pill hover:bg-[var(--surface)] transition-all active:scale-95">
           <Menu size={22} aria-hidden="true" />
@@ -1633,7 +1634,7 @@ function AppContent() {
         </div>
       </div>
 
-      <nav className="hidden lg:flex items-center gap-1 glass-pill px-2 py-1.5 shadow-sm mx-4">
+      <nav className="flex items-center gap-1 glass-pill px-1.5 py-1 shadow-sm mx-4 shrink-0">
         <HeaderNavItem label="Home" icon={<Home />} active={mode === 'home'} onClick={() => switchMode('home')} />
         <HeaderNavItem label="Wellness" icon={<Sparkles />} active={mode === 'wellness'} onClick={() => switchMode('wellness')} />
         <HeaderNavItem label="Journal" icon={<BookOpen />} active={mode === 'journal'} onClick={() => switchMode('journal')} />
@@ -1979,13 +1980,7 @@ function AppContent() {
           <main id="main-content" className={cn("flex-1 pb-24 md:pb-8 mx-auto w-full px-4 pt-6 overflow-x-hidden", mode === 'chat' ? "max-w-full" : "max-w-5xl")}>
             <PullToRefresh onRefresh={handleRefresh}>
             <AnimatePresence mode="wait">
-              <motion.div
-                key={mode}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
-              >
+              <PageWrapper key={mode}>
                 {mode === 'home' && (
                   <HomeDashboard 
                     switchMode={switchMode} 
@@ -2070,7 +2065,7 @@ function AppContent() {
                     onInstallApp={handleInstallClick}
                   />
                 )}
-              </motion.div>
+              </PageWrapper>
             </AnimatePresence>
           </PullToRefresh>
         </main>
@@ -3365,7 +3360,21 @@ const JournalView = memo(function JournalView({ journal, addJournalEntry }: { jo
       ) : (
         <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
           {journal.length === 0 ? (
-            <div className="text-center py-12 glass border border-white/5 rounded-[32px] text-[var(--muted)]">No entries yet.</div>
+            <div className="state-empty animate-in fade-in duration-300">
+              <div className="w-16 h-16 rounded-[24px] bg-[var(--teal)]/10 flex items-center justify-center text-[var(--teal)]">
+                <BookOpen size={24} />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-serif text-lg text-[var(--text)]">Your Clinical Journal is empty</h3>
+                <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">Begin logging your daily vitals, symptoms, sleep, and emotional patterns to unlock medical intelligence charts.</p>
+              </div>
+              <button 
+                onClick={() => setActiveTab('log')}
+                className="px-6 py-2.5 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-[var(--teal)]/10"
+              >
+                Log Today's Entry
+              </button>
+            </div>
           ) : (
             journal.map((entry, i) => (
               <div key={i} className="glass border border-white/10 rounded-[28px] p-4 flex gap-4 hover:glass-morphism transition-all">
@@ -4484,16 +4493,31 @@ const PrescriptionScanner = memo(function PrescriptionScanner({ profile, updateP
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="glass border border-[var(--border)] p-4 rounded-2xl shadow-2xl backdrop-blur-2xl relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-[var(--teal)]/20 to-transparent" />
-        <p className="text-[9px] font-black text-[var(--muted)] uppercase tracking-[0.25em] mb-3 opacity-60">{label}</p>
+      <div className="glass bg-slate-900/90 dark:bg-slate-950/95 border border-slate-700/50 p-3.5 rounded-xl shadow-[0_12px_24px_-6px_rgba(0,0,0,0.5)] backdrop-blur-xl relative overflow-hidden min-w-[150px] text-left">
+        <div className="absolute top-0 left-0 w-full h-[3px] bg-gradient-to-r from-[var(--teal)] via-indigo-500 to-amber-500" />
+        <p className="font-mono text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">{label}</p>
         <div className="space-y-2">
-          {payload.map((entry: any, index: number) => (
-            <div key={index} className="flex items-center gap-3 text-xs font-bold">
-              <div className="w-2.5 h-2.5 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.05)]" style={{ backgroundColor: entry.color }} />
-              <span className="text-[var(--text)]">{entry.name}: <span className="text-[var(--text)] dark:text-white ml-auto">{entry.value}</span></span>
-            </div>
-          ))}
+          {payload.map((entry: any, index: number) => {
+            const displayName = entry.name === 'bpSys' ? 'Systolic' : 
+                                entry.name === 'bpDia' ? 'Diastolic' : 
+                                entry.name === 'sugar' ? 'Glucose' : 
+                                entry.name === 'sleep' ? 'Sleep' : 
+                                entry.name === 'weight' ? 'Weight' : 
+                                entry.name.charAt(0).toUpperCase() + entry.name.slice(1);
+            const unit = entry.name === 'sugar' ? ' mg/dL' :
+                         entry.name === 'sleep' ? ' hrs' :
+                         entry.name === 'weight' ? ' kg' :
+                         entry.name.includes('bp') ? ' mmHg' : '';
+            return (
+              <div key={index} className="flex items-center justify-between gap-4 text-[11px] font-sans font-medium text-slate-200">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full ring-2 ring-white/10 shrink-0" style={{ backgroundColor: entry.color || entry.stroke }} />
+                  <span className="text-slate-400 font-medium whitespace-nowrap">{displayName}</span>
+                </div>
+                <span className="font-mono font-bold text-white text-right ml-auto">{entry.value}{unit}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -4672,13 +4696,13 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
         <div className="absolute right-0 top-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-[0.03] pointer-events-none" />
         
         {!hasData(activeTab) ? (
-          <div className="h-[400px] flex flex-col items-center justify-center text-center space-y-6">
-            <div className="w-24 h-24 rounded-full glass-darker border border-white/5 flex items-center justify-center text-[var(--muted)] opacity-20 shadow-inner">
-              <BarChart3 size={48} />
+          <div className="state-empty border-dashed h-[400px] flex flex-col items-center justify-center text-center animate-in fade-in duration-300">
+            <div className="w-16 h-16 rounded-[24px] bg-blue-500/10 flex items-center justify-center text-blue-400">
+              <BarChart3 size={24} />
             </div>
-            <div className="space-y-2">
-              <p className="text-xl font-serif text-[var(--text)] dark:text-white tracking-tight">Signal Data Missing</p>
-              <p className="text-[10px] text-[var(--muted)] font-black uppercase tracking-[0.2em] max-w-[240px] leading-loose opacity-60">Log your first biometric entry to initiate the neural progress engine.</p>
+            <div className="space-y-1">
+              <h3 className="font-serif text-lg text-[var(--text)]">Telemetry Data Missing</h3>
+              <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">No tracking records have been computed for this filter period. Log your vitals above to activate analytics projection.</p>
             </div>
           </div>
         ) : (
@@ -4704,8 +4728,12 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                       <AreaChart data={data}>
                         <defs>
                           <linearGradient id="colorMood" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="var(--teal)" stopOpacity={0.3}/>
+                            <stop offset="5%" stopColor="var(--teal)" stopOpacity={0.25}/>
                             <stop offset="95%" stopColor="var(--teal)" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorEnergy" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.25}/>
+                            <stop offset="95%" stopColor="#fbbf24" stopOpacity={0}/>
                           </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
@@ -4713,8 +4741,8 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                         <YAxis stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} domain={[0, 5]} />
                         <Tooltip content={<CustomTooltip />} />
                         <Area type="monotone" dataKey="mood" stroke="var(--teal)" fillOpacity={1} fill="url(#colorMood)" strokeWidth={3} />
-                        <Area type="monotone" dataKey="energy" stroke="#fbbf24" fillOpacity={0} strokeWidth={3} />
-                        <Brush dataKey="date" height={20} stroke="var(--teal)" fill="var(--card2)" />
+                        <Area type="monotone" dataKey="energy" stroke="#fbbf24" fillOpacity={1} fill="url(#colorEnergy)" strokeWidth={3} />
+                        <Brush dataKey="date" height={20} stroke="rgba(148, 163, 184, 0.2)" fill="rgba(30, 41, 59, 0.4)" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -4724,14 +4752,20 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                   <h3 className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Sleep Duration (Hours)</h3>
                   <div className="h-[180px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={data}>
+                      <AreaChart data={data}>
+                        <defs>
+                          <linearGradient id="colorSleep" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#818cf8" stopOpacity={0.25}/>
+                            <stop offset="95%" stopColor="#818cf8" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                         <XAxis dataKey="date" stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} />
                         <YAxis stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} />
                         <Tooltip content={<CustomTooltip />} />
-                        <Line type="stepAfter" dataKey="sleep" stroke="#818cf8" strokeWidth={3} dot={{ r: 4, fill: '#818cf8' }} activeDot={{ r: 6 }} />
-                        <Brush dataKey="date" height={20} stroke="#818cf8" fill="var(--card2)" />
-                      </LineChart>
+                        <Area type="monotone" dataKey="sleep" stroke="#818cf8" fillOpacity={1} fill="url(#colorSleep)" strokeWidth={3} dot={{ r: 4, fill: '#818cf8' }} activeDot={{ r: 6 }} />
+                        <Brush dataKey="date" height={20} stroke="rgba(148, 163, 184, 0.2)" fill="rgba(30, 41, 59, 0.4)" />
+                      </AreaChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
@@ -4755,15 +4789,25 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                 </div>
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data.filter(d => d.bpSys !== null)}>
+                    <AreaChart data={data.filter(d => d.bpSys !== null)}>
+                      <defs>
+                        <linearGradient id="colorBpSys" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#f87171" stopOpacity={0.25}/>
+                          <stop offset="95%" stopColor="#f87171" stopOpacity={0}/>
+                        </linearGradient>
+                        <linearGradient id="colorBpDia" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.25}/>
+                          <stop offset="95%" stopColor="#60a5fa" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                       <XAxis dataKey="date" stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} domain={['dataMin - 10', 'dataMax + 10']} />
                       <Tooltip content={<CustomTooltip />} />
-                      <Line type="monotone" dataKey="bpSys" stroke="#f87171" strokeWidth={3} dot={{ r: 4, fill: '#f87171' }} />
-                      <Line type="monotone" dataKey="bpDia" stroke="#60a5fa" strokeWidth={3} dot={{ r: 4, fill: '#60a5fa' }} />
-                      <Brush dataKey="date" height={20} stroke="#f87171" fill="var(--card2)" />
-                    </LineChart>
+                      <Area type="monotone" dataKey="bpSys" stroke="#f87171" fillOpacity={1} fill="url(#colorBpSys)" strokeWidth={3} dot={{ r: 4, fill: '#f87171' }} />
+                      <Area type="monotone" dataKey="bpDia" stroke="#60a5fa" fillOpacity={1} fill="url(#colorBpDia)" strokeWidth={3} dot={{ r: 4, fill: '#60a5fa' }} />
+                      <Brush dataKey="date" height={20} stroke="rgba(148, 163, 184, 0.2)" fill="rgba(30, 41, 59, 0.4)" />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -4777,7 +4821,7 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                     <AreaChart data={data.filter(d => d.sugar !== null)}>
                       <defs>
                         <linearGradient id="colorSugar" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.3}/>
+                          <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.25}/>
                           <stop offset="95%" stopColor="#fbbf24" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
@@ -4786,7 +4830,7 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                       <YAxis stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} domain={['dataMin - 20', 'dataMax + 20']} />
                       <Tooltip content={<CustomTooltip />} />
                       <Area type="monotone" dataKey="sugar" stroke="#fbbf24" fillOpacity={1} fill="url(#colorSugar)" strokeWidth={3} />
-                      <Brush dataKey="date" height={20} stroke="#fbbf24" fill="var(--card2)" />
+                      <Brush dataKey="date" height={20} stroke="rgba(148, 163, 184, 0.2)" fill="rgba(30, 41, 59, 0.4)" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -4798,14 +4842,20 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
                 <h3 className="text-[10px] font-bold text-[var(--muted)] uppercase tracking-widest">Body Weight (kg)</h3>
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data.filter(d => d.weight !== null)}>
+                    <AreaChart data={data.filter(d => d.weight !== null)}>
+                      <defs>
+                        <linearGradient id="colorWeight" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="var(--teal)" stopOpacity={0.25}/>
+                          <stop offset="95%" stopColor="var(--teal)" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                       <XAxis dataKey="date" stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} />
                       <YAxis stroke="var(--muted)" fontSize={10} tickLine={false} axisLine={false} domain={['dataMin - 2', 'dataMax + 2']} />
                       <Tooltip content={<CustomTooltip />} />
-                      <Line type="monotone" dataKey="weight" stroke="var(--teal)" strokeWidth={3} dot={{ r: 5, fill: 'var(--teal)' }} />
-                      <Brush dataKey="date" height={20} stroke="var(--teal)" fill="var(--card2)" />
-                    </LineChart>
+                      <Area type="monotone" dataKey="weight" stroke="var(--teal)" fillOpacity={1} fill="url(#colorWeight)" strokeWidth={3} dot={{ r: 5, fill: 'var(--teal)' }} />
+                      <Brush dataKey="date" height={20} stroke="rgba(148, 163, 184, 0.2)" fill="rgba(30, 41, 59, 0.4)" />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -7450,15 +7500,20 @@ const InsuranceView = memo(function InsuranceView({ policies, onAddPolicy, profi
               ))}
             </div>
           ) : !showAdd && (
-            <div className="bg-[var(--card)] border border-[var(--border)] border-dashed rounded-[40px] p-12 text-center space-y-4">
-              <div className="w-16 h-16 bg-[var(--card2)] rounded-full flex items-center justify-center mx-auto text-[var(--muted)] opacity-30 mb-2">
-                <Shield size={32} />
+            <div className="state-empty border-dashed animate-in fade-in duration-300">
+              <div className="w-16 h-16 rounded-[24px] bg-blue-500/10 flex items-center justify-center text-blue-400">
+                <Shield size={24} />
               </div>
               <div className="space-y-1">
-                <h4 className="text-sm font-bold text-[var(--muted)] uppercase tracking-widest">Empty Vault</h4>
-                <p className="text-[10px] text-[var(--muted)] px-8 leading-relaxed">Securely store your health insurance policies for instant access and AI analysis.</p>
+                <h3 className="font-serif text-lg text-[var(--text)]">Insurance vault vacant</h3>
+                <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">Securely archive active health insurance contracts to evaluate risk protection and execute AI analysis.</p>
               </div>
-              <button onClick={() => setShowAdd(true)} className="px-6 py-2.5 bg-blue-500/10 text-blue-500 border border-blue-500/20 rounded-full text-[10px] font-black uppercase tracking-widest">Add First Policy</button>
+              <button 
+                onClick={() => setShowAdd(true)}
+                className="px-6 py-2.5 bg-blue-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg border border-white/10"
+              >
+                Add First Policy
+              </button>
             </div>
           )}
         </div>
@@ -8291,17 +8346,17 @@ const RemindersView = memo(function RemindersView({
             </div>
           </motion.div>
         )) : (
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-12 text-center space-y-3">
-            <div className="w-16 h-16 rounded-full bg-[var(--card2)] border-2 border-dashed border-[var(--border)] flex items-center justify-center mx-auto text-[var(--muted)]">
+          <div className="state-empty animate-in fade-in duration-300">
+            <div className="w-16 h-16 rounded-[24px] bg-[var(--teal)]/10 flex items-center justify-center text-[var(--teal)]">
               <Clock size={24} />
             </div>
             <div className="space-y-1">
-              <h3 className="text-sm font-bold text-[var(--text)]">No active reminders</h3>
-              <p className="text-xs text-[var(--muted)] leading-relaxed">Add your daily medicines or health checks to stay on top of your wellbeing.</p>
+              <h3 className="font-serif text-lg text-[var(--text)]">No active reminders</h3>
+              <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">Configure schedules for daily medications, follow-ups, or medical tests to ensure adherence protocol.</p>
             </div>
             <button 
               onClick={() => setShowAdd(true)}
-              className="px-6 py-2 bg-[var(--teal)] text-[#020f0c] font-black text-[10px] uppercase tracking-widest rounded-xl mt-4"
+              className="px-6 py-2.5 bg-gradient-to-br from-[var(--teal)] to-[var(--teal-mid)] text-[#020f0c] text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-[var(--teal)]/10"
             >
               Add Your First Reminder
             </button>
@@ -10257,6 +10312,24 @@ const HealthLockerView = memo(function HealthLockerView({ documents, onAddDocume
           </div>
         </motion.div>
 
+        {filtered.length === 0 && (
+          <div className="state-empty border-dashed p-8 flex flex-col items-center justify-center text-center animate-in fade-in duration-300">
+            <div className="w-16 h-16 rounded-[24px] bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+              <Folder size={24} />
+            </div>
+            <div className="space-y-1">
+              <h3 className="font-serif text-lg text-[var(--text)]">Vault Section empty</h3>
+              <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">No medical assets are currently stored in this category. Place prescriptions, scans, or other cards here.</p>
+            </div>
+            <button
+              onClick={() => handleFileUpload(false)}
+              className="px-5 py-2.5 bg-indigo-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg border border-white/10"
+            >
+              Add Document
+            </button>
+          </div>
+        )}
+
         {filtered.map((doc) => (
           <motion.div
             layout
@@ -10683,11 +10756,14 @@ const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }:
                 <button className="px-6 py-3 bg-[var(--teal)] text-[#020f0c] text-[10px] font-black uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-[var(--teal)]/20 hover:scale-105 active:scale-95 transition-all border border-white/20">Refill ↗</button>
               </motion.div>
             )) : (
-              <div className="glass border border-dashed border-white/10 rounded-[40px] p-16 text-center shadow-inner">
-                <div className="w-20 h-20 rounded-full glass-morphism flex items-center justify-center mx-auto text-[var(--muted)] opacity-20 mb-6">
-                  <Pill size={40} />
+              <div className="state-empty animate-in fade-in duration-300">
+                <div className="w-16 h-16 rounded-[24px] bg-amber-500/10 flex items-center justify-center text-amber-500">
+                  <Pill size={24} />
                 </div>
-                <p className="text-[11px] text-[var(--muted)] font-black uppercase tracking-[0.3em] opacity-40">Zero active prescriptions detected</p>
+                <div className="space-y-1">
+                  <h3 className="font-serif text-lg text-[var(--text)]">No Active Prescriptions</h3>
+                  <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">No active medication protocols have been registered into your dynamic clinical profile.</p>
+                </div>
               </div>
             )}
           </div>
@@ -10730,11 +10806,20 @@ const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }:
             ))}
           </div>
         ) : (
-          <div className="glass border border-dashed border-white/10 rounded-[40px] p-16 text-center shadow-inner">
-            <div className="w-20 h-20 rounded-full glass-morphism flex items-center justify-center mx-auto text-[var(--muted)] opacity-20 mb-6">
-              <Folder size={40} />
+          <div className="state-empty animate-in fade-in duration-300">
+            <div className="w-16 h-16 rounded-[24px] bg-amber-500/10 flex items-center justify-center text-amber-500">
+              <Folder size={24} />
             </div>
-            <p className="text-[11px] text-[var(--muted)] font-black uppercase tracking-[0.3em] opacity-40">Vault currently vacant</p>
+            <div className="space-y-1">
+              <h3 className="font-serif text-lg text-[var(--text)]">Your Health Vault is vacant</h3>
+              <p className="text-xs text-[var(--muted)] max-w-sm leading-relaxed">Securely upload clinical test receipts, physician prescription reports, or scan copies to configure them directly.</p>
+            </div>
+            <button 
+              onClick={handleManualUpload}
+              className="px-6 py-2.5 bg-amber-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg border border-white/10"
+            >
+              Add First Record
+            </button>
           </div>
         )}
       </div>

@@ -88,12 +88,18 @@ body {
 
 /* Base Glassmorphism Class - Cleaner & More Polished */
 .glass {
-  background: var(--glass);
-  backdrop-filter: blur(10px) saturate(160%);
-  -webkit-backdrop-filter: blur(10px) saturate(160%);
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
-  transition: opacity 0.3s ease, transform 0.3s ease, background-color 0.3s ease;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  border: 1px solid rgba(0, 0, 0, 0.03);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+  transition: opacity 0.3s ease, border-color 0.3s ease, background-color 0.3s ease;
+}
+
+body.dark-mode .glass {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .glass:hover {
@@ -807,14 +813,67 @@ body.dark-mode .bnav-fab {
   elite product visual design (Stripe / Linear-esque).
 */
 
+/* --- Typography Hierarchy --- */
+h1 { font-size: 2rem !important; line-height: 1.25 !important; font-weight: 700 !important; letter-spacing: -0.03em !important; color: var(--text) !important; font-family: var(--font-serif) !important; }
+h2 { font-size: 1.5rem !important; line-height: 1.3 !important; font-weight: 600 !important; letter-spacing: -0.025em !important; color: var(--text) !important; font-family: var(--font-serif) !important; }
+h3 { font-size: 1.15rem !important; line-height: 1.4 !important; font-weight: 600 !important; letter-spacing: -0.02em !important; color: var(--text) !important; font-family: var(--font-sans) !important; }
+.text-data, .font-mono { font-size: 0.85rem !important; font-weight: 500 !important; font-family: var(--font-mono) !important; letter-spacing: -0.01em !important; }
+
+/* --- Spacing Patterns & Visual Rhythm --- */
+.app-container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
+.section-spacing { margin-top: 2.25rem; margin-bottom: 2.25rem; }
+
+/* Enforce compact visual rhythm gaps consistently */
+.grid { gap: 1rem !important; }
+@media (min-width: 768px) {
+  .grid { gap: 1.25rem !important; }
+}
+
+/* --- Premium State Components --- */
+.state-card,
+.state-empty,
+.state-loading,
+.state-error {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 18px !important;
+  padding: 2.5rem !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  gap: 1.25rem !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.01) !important;
+  transition: all 0.3s ease !important;
+}
+
+body.dark-mode .state-card,
+body.dark-mode .state-empty,
+body.dark-mode .state-loading {
+  background: rgba(30, 41, 59, 0.45) !important;
+}
+
+.state-error {
+  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+  background: rgba(239, 68, 68, 0.02) !important;
+}
+.state-error h3, .state-error h4 {
+  color: var(--red) !important;
+}
+
+.state-loading .animate-spin {
+  color: var(--teal) !important;
+}
+
 /* Compact modern paddings for bloated containers */
 .p-10, .p-12, .p-[2.5rem], .p-[3rem] {
-  padding: 1.5rem !important;
+  padding: 1.25rem !important;
 }
 
 @media (min-width: 768px) {
   .md\:p-10, .md\:p-12 {
-    padding: 2rem !important; /* Perfect standard padding (32px) on desktop */
+    padding: 1.75rem !important; /* Perfect standard padding on desktop */
   }
 }
 
@@ -832,6 +891,7 @@ body.dark-mode .bnav-fab {
 input, select, textarea {
   border-radius: 12px !important;
   font-size: 14px !important;
+  border: 1px solid var(--border) !important;
 }
 
 /* Highly tactile and premium rounded button styles (fully pill/capsule rounded as requested!) */
@@ -841,6 +901,31 @@ button, .btn-primary, .btn-secondary {
   letter-spacing: 0.025em;
   font-weight: 600 !important;
   box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05) !important;
+  padding: 0.75rem 1.5rem !important;
+}
+
+/* Interactive elements get custom spring easing for back-elastic responsiveness */
+button, 
+.btn-primary, 
+.btn-secondary, 
+.quick-action-btn, 
+.sidebar-item,
+[role="button"] {
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+button:hover:not(:disabled),
+.btn-primary:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02) !important;
+}
+
+button:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-secondary:active:not(:disabled),
+.quick-action-btn:active,
+[role="button"]:active {
+  transform: scale(0.95) !important;
 }
 
 /* Replace custom bulky layout radii values across entire markup to feel organic and premium */
@@ -856,22 +941,33 @@ button, .btn-primary, .btn-secondary {
 
 /* Subtle and pristine glass overlays and shadow outlines */
 .glass, .glass-card, .glass-darker {
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.02) !important;
+  border: 1px solid rgba(0, 0, 0, 0.03) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
 }
 
 body.dark-mode .glass, 
 body.dark-mode .glass-card, 
 body.dark-mode .glass-darker {
-  box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.15) !important;
-  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+  border: 1px solid rgba(255, 255, 255, 0.04) !important;
 }
 
-/* Sleek interactive elements */
-.feature-card:hover, .card:hover {
+/* Premium glass, featured, and profile cards with spring bounce scale */
+.glass, .glass-card, .feature-card, .card {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.feature-card:hover, .card:hover, .glass-card:hover {
   border-color: var(--teal) !important;
-  transform: translateY(-2px) !important;
-  box-shadow: 0 8px 24px -10px rgba(13, 148, 136, 0.1) !important;
+  transform: translateY(-3px) scale(1.01) !important;
+  box-shadow: 0 8px 24px -10px rgba(13, 148, 136, 0.15) !important;
+}
+
+body.dark-mode .feature-card:hover,
+body.dark-mode .card:hover,
+body.dark-mode .glass-card:hover {
+  border-color: rgba(45, 212, 191, 0.25) !important;
+  box-shadow: 0 12px 36px 0 rgba(0, 0, 0, 0.4) !important;
 }
 
 /* Custom visual fixes to reduce screen-consuming heights */
@@ -879,19 +975,54 @@ body.dark-mode .glass-darker {
   padding: 1rem !important;
 }
 
-/* Eliminate excessive glowing shadows */
-.shadow-2xl, .shadow-xl {
-  box-shadow: 0 4px 16px -1px rgba(0,0,0,0.04), 0 2px 4px -2px rgba(0,0,0,0.04) !important;
+/* Eliminate excessive glowing shadows - make them hyper-minimal */
+.shadow-2xl, .shadow-xl, .shadow-md, .shadow-lg {
+  box-shadow: 0 1px 3px 0 rgba(0,0,0,0.03), 0 1px 2px -1px rgba(0,0,0,0.03) !important;
 }
 
-body.dark-mode .shadow-2xl, body.dark-mode .shadow-xl {
-  box-shadow: 0 8px 24px -2px rgba(0,0,0,0.2) !important;
+body.dark-mode .shadow-2xl, body.dark-mode .shadow-xl, body.dark-mode .shadow-md, body.dark-mode .shadow-lg {
+  box-shadow: 0 4px 12px -2px rgba(0,0,0,0.3) !important;
 }
 
-/* Clean typography tracking */
-h1, h2, h3, h4 {
-  letter-spacing: -0.025em !important;
-  font-weight: 600 !important;
+/* Shimmer Pulse and Skeleton classes for high-fidelity state transitions */
+@keyframes shimmerPulse {
+  0%, 100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+
+.shimmer-pulse {
+  animation: shimmerPulse 1.8s infinite ease-in-out !important;
+}
+
+.skeleton-line {
+  background: rgba(0, 0, 0, 0.04) !important;
+  border-radius: 6px !important;
+  height: 12px !important;
+  display: block;
+}
+
+body.dark-mode .skeleton-line {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.skeleton-card {
+  border: 1px solid var(--border) !important;
+  border-radius: 18px !important;
+  background: var(--card) !important;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-none::-webkit-scrollbar {
+  display: none !important;
+}
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-none {
+  -ms-overflow-style: none !important;  /* IE and Edge */
+  scrollbar-width: none !important;  /* Firefox */
 }
 
 
