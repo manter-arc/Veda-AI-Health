@@ -94,6 +94,10 @@ body {
   border: 1px solid rgba(0, 0, 0, 0.03);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
   transition: opacity 0.3s ease, border-color 0.3s ease, background-color 0.3s ease;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 body.dark-mode .glass {
@@ -111,14 +115,23 @@ body.dark-mode .glass {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .glass-pill {
   background: var(--glass);
   backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
   border-radius: 9999px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .glass-nav {
@@ -127,6 +140,10 @@ body.dark-mode .glass {
   -webkit-backdrop-filter: blur(12px) saturate(150%);
   border-top: 1px solid var(--glass-border);
   box-shadow: 0 -4px 30px rgba(0, 0, 0, 0.03);
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .glass-header {
@@ -135,6 +152,10 @@ body.dark-mode .glass {
   -webkit-backdrop-filter: blur(12px) saturate(150%);
   border-bottom: 1px solid var(--glass-border);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .glass-darker {
@@ -142,13 +163,22 @@ body.dark-mode .glass {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border);
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .glass-morphism {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   transition: all 0.3s;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 body.dark-mode .glass-morphism {
@@ -216,6 +246,11 @@ body.dark-mode.high-contrast {
     radial-gradient(at 100% 0%, hsla(170, 70%, 40%, 0.08) 0, transparent 40%),
     radial-gradient(at 0% 100%, hsla(220, 70%, 50%, 0.06) 0, transparent 40%);
   pointer-events: none;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  will-change: transform;
 }
 
 body.dark-mode .bg-gradient {
@@ -255,6 +290,9 @@ body.dark-mode .bg-gradient {
   gap: 32px;
   animation: scroll 40s linear infinite;
   width: max-content;
+  will-change: transform;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
 }
 
 .features-scroll:hover {
@@ -300,6 +338,11 @@ body.dark-mode .bg-gradient {
   transition: all 0.4s cubic-bezier(0.2, 0, 0, 1);
   position: relative;
   overflow: hidden;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  will-change: transform, border-color, box-shadow;
 }
 
 .feature-card.featured {
@@ -628,6 +671,11 @@ body.dark-mode .btn-primary {
   border-radius: var(--radius);
   padding: 24px;
   transition: all 0.3s ease;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  will-change: transform, border-color, box-shadow;
 }
 
 .feature-card:hover, .card:hover {
@@ -955,6 +1003,10 @@ body.dark-mode .glass-darker {
 /* Premium glass, featured, and profile cards with spring bounce scale */
 .glass, .glass-card, .feature-card, .card {
   transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease !important;
+  -webkit-transform: translate3d(0, 0, 0);
+  transform: translate3d(0, 0, 0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .feature-card:hover, .card:hover, .glass-card:hover {
