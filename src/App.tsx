@@ -818,7 +818,7 @@ function AppContent() {
   // Seamles automatic router for newly logged-in or signed-up users
   useEffect(() => {
     if (isAuthReady && user) {
-      if (mode === 'auth') {
+      if (mode === 'auth' || mode === 'landing') {
         const isProfileLoaded = profile.uid === user.uid;
         if (isProfileLoaded) {
           if (profile.setupDone) {

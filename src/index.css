@@ -88,16 +88,16 @@ body {
 
 /* Base Glassmorphism Class - Cleaner & More Polished */
 .glass {
-  background: rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(8px) saturate(140%);
-  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid rgba(0, 0, 0, 0.03);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
   transition: opacity 0.3s ease, border-color 0.3s ease, background-color 0.3s ease;
 }
 
 body.dark-mode .glass {
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(15, 23, 42, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.04);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
@@ -107,16 +107,16 @@ body.dark-mode .glass {
 }
 
 .glass-dark {
-  background: rgba(0, 0, 0, 0.15);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .glass-pill {
   background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid var(--glass-border);
   border-radius: 9999px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.02);
@@ -124,31 +124,31 @@ body.dark-mode .glass {
 
 .glass-nav {
   background: var(--glass);
-  backdrop-filter: blur(12px) saturate(150%);
-  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-top: 1px solid var(--glass-border);
   box-shadow: 0 -4px 30px rgba(0, 0, 0, 0.03);
 }
 
 .glass-header {
   background: var(--glass);
-  backdrop-filter: blur(12px) saturate(150%);
-  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--glass-border);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
 }
 
 .glass-darker {
   background: var(--surface);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid var(--border);
 }
 
 .glass-morphism {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid var(--border);
   transition: all 0.3s;
 }
@@ -645,8 +645,8 @@ body.dark-mode .feature-card:hover, body.dark-mode .card:hover {
 
 .glass-card {
   background: var(--card);
-  opacity: 0.8;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border: 1px solid var(--border);
 }
 
