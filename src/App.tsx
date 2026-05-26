@@ -815,6 +815,22 @@ function AppContent() {
     }
   }, [user, profile.setupDone, mode]);
 
+  // Seamles automatic router for newly logged-in or signed-up users
+  useEffect(() => {
+    if (isAuthReady && user) {
+      if (mode === 'auth') {
+        const isProfileLoaded = profile.uid === user.uid;
+        if (isProfileLoaded) {
+          if (profile.setupDone) {
+            setMode('home');
+          } else {
+            setMode('onboarding');
+          }
+        }
+      }
+    }
+  }, [user, isAuthReady, profile, mode]);
+
   const addJournalEntry = async (entry: JournalEntry) => {
     if (user) {
       try {
@@ -1978,8 +1994,9 @@ function AppContent() {
         )}
 
         <div className="flex flex-col min-h-screen">
-          {mode === 'onboarding' && <Onboarding profile={profile} setProfile={setProfile} updateProfile={updateProfile} onComplete={() => {
-            updateProfile({ ...profile, setupDone: true });
+          {mode === 'onboarding' && <Onboarding profile={profile} setProfile={setProfile} updateProfile={updateProfile} onComplete={(completedProfile) => {
+            // Already updated in Firestore, safely sync state and navigate
+            setProfile(completedProfile);
             setMode('home');
           }} />}
           {renderHeader()}
@@ -4880,9 +4897,21 @@ const VitalsGraph = memo(function VitalsGraph({ journal, initialTab = 'wellbeing
   );
 });
 
-function Onboarding({ profile, setProfile, updateProfile, onComplete }: { profile: UserProfile, setProfile: any, updateProfile: (p: UserProfile) => Promise<void>, onComplete: () => void }) {
+function Onboarding({ profile, setProfile, updateProfile, onComplete }: { profile: UserProfile, setProfile: any, updateProfile: (p: UserProfile) => Promise<void>, onComplete: (completedProfile: UserProfile) => void }) {
   const [step, setStep] = useState(1);
   const [data, setData] = useState(profile);
+  
+  // Safe sync: When profile loaded gets populated (e.g., from Google auth), pre-fill the name
+  useEffect(() => {
+    if (profile && (profile.name || profile.email)) {
+      setData(prev => ({
+        ...prev,
+        name: prev.name || profile.name || '',
+        email: prev.email || profile.email || ''
+      }));
+    }
+  }, [profile]);
+
   const [error, setError] = useState<string | null>(null);
   const [customInput, setCustomInput] = useState<{ [key: string]: string }>({
     conditions: '', familyHistory: '', allergies: '', vaccinationHistory: ''
@@ -4925,8 +4954,9 @@ function Onboarding({ profile, setProfile, updateProfile, onComplete }: { profil
     setError(null);
     if (step < 6) setStep(step + 1);
     else {
-      await updateProfile({ ...data, setupDone: true });
-      onComplete();
+      const finalProfileData = { ...data, setupDone: true };
+      await updateProfile(finalProfileData);
+      onComplete(finalProfileData);
     }
   };
 
