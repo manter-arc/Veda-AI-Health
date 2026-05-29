@@ -80,6 +80,7 @@ import {
   RefreshCw,
   Ruler,
   Scale,
+  Scan,
   Search, 
   Send,
   Settings,
@@ -294,6 +295,7 @@ export default function App() {
 function AppContent() {
   const { t, i18n } = useTranslation();
   const [mode, setMode] = useState<AppMode>('landing');
+  const [activeFeature, setActiveFeature] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLightMode, setIsLightMode] = useLocalStorage('veda_theme', true);
   
@@ -982,76 +984,157 @@ function AppContent() {
     <div id="landing-page" className="relative min-h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)] transition-colors duration-300">
       <div className="bg-gradient" />
       
-      <nav className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all glass-header">
+      <motion.nav 
+        initial={{ y: -70, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 180, damping: 20 }}
+        className="fixed top-0 left-0 right-0 z-[100] py-4 transition-all glass-header"
+      >
         <div className="max-w-[1100px] mx-auto px-6 flex items-center justify-between">
-          <a href="#" className="font-serif text-2xl text-[var(--teal)] flex items-baseline gap-1.5 no-underline">
+          <motion.a 
+            href="#" 
+            whileHover={{ scale: 1.02 }}
+            className="font-serif text-2xl text-[var(--teal)] flex items-baseline gap-1.5 no-underline"
+          >
             Veda <span className="font-sans text-[10px] text-[var(--muted)] font-bold uppercase tracking-[0.2em]">Health</span>
-          </a>
+          </motion.a>
           <div className="hidden md:flex items-center gap-2 ml-auto mr-8">
-            <a href="#features" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)]">Features</a>
-            <a href="#how" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2">App</a>
-            <a href="#testimonials" className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2">Reviews</a>
+            <motion.a 
+              href="#features" 
+              whileHover={{ y: -2, scale: 1.05 }}
+              whileTap={{ y: 0 }}
+              className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)]"
+            >
+              Features
+            </motion.a>
+            <motion.a 
+              href="#how" 
+              whileHover={{ y: -2, scale: 1.05 }}
+              whileTap={{ y: 0 }}
+              className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2"
+            >
+              App
+            </motion.a>
+            <motion.a 
+              href="#testimonials" 
+              whileHover={{ y: -2, scale: 1.05 }}
+              whileTap={{ y: 0 }}
+              className="px-5 py-2 text-[var(--text2)] no-underline text-[12px] font-black uppercase tracking-[0.15em] hover:text-[var(--teal)] transition-all glass-pill border-none hover:bg-[var(--teal-glow)] ml-2"
+            >
+              Reviews
+            </motion.a>
           </div>
           <div className="flex items-center gap-4">
-            <button 
+            <motion.button 
               onClick={() => setMode('auth')} 
-              className="px-6 py-2 glass-pill text-[var(--text2)] font-black text-[12px] uppercase tracking-wider hover:text-[var(--teal)] transition-all border-none hover:bg-[var(--teal-glow)]"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="px-6 py-2 glass-pill text-[var(--text2)] font-black text-[12px] uppercase tracking-wider hover:text-[var(--teal)] transition-all border-none hover:bg-[var(--teal-glow)] cursor-pointer"
             >
               Sign In
-            </button>
-            <button onClick={handleStart} className="btn-primary px-8 shadow-xl shadow-[var(--teal)]/20">
+            </motion.button>
+            <motion.button 
+              onClick={handleStart} 
+              whileHover={{ scale: 1.05, y: -2 }}
+              whileTap={{ scale: 0.95 }}
+              className="btn-primary px-8 shadow-xl shadow-[var(--teal)]/20 cursor-pointer"
+            >
               {user ? 'Open App' : 'Get Started'}
-            </button>
+            </motion.button>
           </div>
         </div>
-      </nav>
+      </motion.nav>
 
       <section className="hero min-h-screen flex items-center pt-[120px] pb-20 relative overflow-hidden">
         <div className="max-w-[1100px] mx-auto px-6 grid md:grid-cols-2 gap-20 items-center w-full relative z-10">
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
+            initial="hidden"
+            animate="visible"
+            variants={{
+              hidden: { opacity: 0 },
+              visible: { opacity: 1, transition: { staggerChildren: 0.12, delayChildren: 0.1 } }
+            }}
           >
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-full mb-6 text-[10px] font-bold text-[var(--teal)] uppercase tracking-widest">
+            <motion.div 
+              variants={{
+                hidden: { opacity: 0, y: 15 },
+                visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 150 } }
+              }}
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-full mb-6 text-[10px] font-bold text-[var(--teal)] uppercase tracking-widest"
+            >
               Now powered by Gemini 2.0 Flash
-            </div>
-            <h1 className="font-serif text-[clamp(42px,6vw,64px)] leading-[1.05] tracking-tight text-[var(--text)] mb-6">
-              Your <em className="italic text-[var(--teal)] not-italic">AI doctor</em><br />always available.
-            </h1>
-            <p className="text-lg text-[var(--text2)] leading-relaxed max-w-[480px] mb-10 font-medium opacity-80">
+            </motion.div>
+            
+            <motion.h1 
+              variants={{
+                hidden: { opacity: 0, y: 25 },
+                visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 180, damping: 18 } }
+              }}
+              className="font-serif text-[clamp(42px,6vw,64px)] leading-[1.05] tracking-tight text-[var(--text)] mb-6"
+            >
+              Your Your <em className="italic text-[var(--teal)] not-italic">AI doctor</em><br />always available.
+            </motion.h1>
+            
+            <motion.p 
+              variants={{
+                hidden: { opacity: 0, y: 20 },
+                visible: { opacity: 1, y: 0 }
+              }}
+              className="text-lg text-[var(--text2)] leading-relaxed max-w-[480px] mb-10 font-medium opacity-80"
+            >
               Veda gives you instant health guidance, tracks your vitals, and manages your medical life — all in one simple, private app.
-            </p>
-            <div className="flex flex-wrap items-center gap-4 mt-8">
-              <button 
+            </motion.p>
+            
+            <motion.div 
+              variants={{
+                hidden: { opacity: 0, scale: 0.95 },
+                visible: { opacity: 1, scale: 1, transition: { type: "spring", stiffness: 150 } }
+              }}
+              className="flex flex-wrap items-center gap-4 mt-8"
+            >
+              <motion.button 
                 onClick={handleStart} 
-                className="flex-1 xs:flex-none btn-primary px-10 py-5 text-base rounded-2xl shadow-lg shadow-[var(--teal)]/10"
+                whileHover={{ scale: 1.04, y: -2 }}
+                whileTap={{ scale: 0.98 }}
+                className="flex-1 xs:flex-none btn-primary px-10 py-5 text-base rounded-2xl shadow-lg shadow-[var(--teal)]/10 cursor-pointer"
               >
                 <Stethoscope size={20} />
                 Try Veda Free
-              </button>
-              <a 
+              </motion.button>
+              <motion.a 
                 href="#features" 
-                className="flex-1 xs:flex-none btn-secondary px-8 py-5 text-base rounded-2xl border-[var(--border)]"
+                whileHover={{ scale: 1.04, y: -2 }}
+                whileTap={{ scale: 0.98 }}
+                className="flex-1 xs:flex-none btn-secondary px-8 py-5 text-base rounded-2xl border-[var(--border)] text-center no-underline inline-flex items-center justify-center"
               >
                 Explore Features
-              </a>
-            </div>
-            <p className="mt-6 text-[11px] text-[var(--muted)] font-bold uppercase tracking-widest flex items-center gap-3">
+              </motion.a>
+            </motion.div>
+            
+            <motion.p 
+              variants={{
+                hidden: { opacity: 0 },
+                visible: { opacity: 1, transition: { delay: 0.6 } }
+              }}
+              className="mt-6 text-[11px] text-[var(--muted)] font-bold uppercase tracking-widest flex items-center gap-3 animate-pulse"
+            >
               <span>✓ Private & secure</span>
               <span className="opacity-30">|</span>
               <span>✓ No sign-up needed</span>
-            </p>
+            </motion.p>
           </motion.div>
 
           <motion.div 
             className="flex justify-center items-center relative"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.8, delay: 0.2 }}
+            initial={{ opacity: 0, y: 40, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ type: "spring", stiffness: 100, damping: 18, delay: 0.2 }}
           >
             <div className="relative">
-              <div className="w-[280px] h-[560px] bg-[var(--bg)] border border-[var(--border)] rounded-[40px] overflow-hidden shadow-2xl relative flex flex-col">
+              {/* Decorative premium radial mesh glow background */}
+              <div className="absolute -inset-10 bg-radial from-[var(--teal-glow)] via-transparent to-transparent opacity-45 pointer-events-none rounded-full blur-[40px] z-0 animate-pulse duration-[8000ms]" />
+              
+              <div className="w-[280px] h-[560px] bg-[var(--bg)] border border-[var(--border)] rounded-[40px] overflow-hidden shadow-2xl relative flex flex-col z-10 transition-shadow hover:shadow-[0_20px_50px_rgba(13,148,136,0.15)]">
                 <div className="h-12 bg-[var(--surface)] flex items-center justify-between px-6 text-[10px] text-[var(--muted)] font-black uppercase tracking-widest border-b border-[var(--border)] shrink-0">
                   <span>9:41</span>
                   <div className="flex gap-1.5 opacity-60">
@@ -1059,265 +1142,576 @@ function AppContent() {
                     <Zap size={12} />
                   </div>
                 </div>
+                
                 <div className="p-5 space-y-4 flex-1">
-                  <div className="flex gap-2.5 ai">
+                  <motion.div 
+                    initial={{ opacity: 0, x: -15, scale: 0.95 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    transition={{ type: "spring", stiffness: 200, delay: 0.8 }}
+                    className="flex gap-2.5 ai"
+                  >
                     <div className="p-3 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-[12px] leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
                       Namaste! I'm Veda. How can I help you today?
                     </div>
-                  </div>
-                  <div className="flex flex-row-reverse gap-2.5 user">
+                  </motion.div>
+                  
+                  <motion.div 
+                    initial={{ opacity: 0, x: 15, scale: 0.95 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    transition={{ type: "spring", stiffness: 200, delay: 1.5 }}
+                    className="flex flex-row-reverse gap-2.5 user"
+                  >
                     <div className="p-3 bg-[var(--teal)] text-white dark:text-[#020617] font-bold rounded-2xl rounded-tr-sm text-[12px] leading-relaxed max-w-[85%] shadow-md">
                       I have a headache since morning
                     </div>
-                  </div>
-                  <div className="flex gap-2.5 ai">
+                  </motion.div>
+                  
+                  <motion.div 
+                    initial={{ opacity: 0, x: -15, scale: 0.95 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    transition={{ type: "spring", stiffness: 200, delay: 2.2 }}
+                    className="flex gap-2.5 ai"
+                  >
                     <div className="p-3 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-[12px] leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
                       I'm sorry to hear that. Is the pain sharp or dull?
                     </div>
-                  </div>
+                  </motion.div>
                 </div>
+                
                 <div className="p-4 border-t border-[var(--border)] bg-[var(--surface)] shrink-0">
                   <div className="w-full h-8 rounded-full bg-[var(--bg)] border border-[var(--border)] flex items-center px-4">
                     <div className="w-1 h-3 bg-[var(--teal)] rounded-full animate-pulse" />
                   </div>
                 </div>
               </div>
-              {/* Floating badges - Minimal Style */}
-              <div className="absolute -left-12 top-1/4 bg-[var(--card)] border border-[var(--teal-line)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--teal)]">
+
+              {/* Floating badges - Oscillating animations */}
+              <motion.div 
+                animate={{ y: [0, -10, 0] }}
+                transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
+                whileHover={{ scale: 1.05, transition: { duration: 0.2 } }}
+                className="absolute -left-12 top-1/4 bg-[var(--card)] border border-[var(--teal-line)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--teal)] z-20 cursor-default select-none"
+              >
                 <FileText size={14} /> Reports Read
-              </div>
-              <div className="absolute -right-12 top-1/2 bg-[var(--card)] border border-[var(--border)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--amber)]">
+              </motion.div>
+              
+              <motion.div 
+                animate={{ y: [0, 10, 0] }}
+                transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut", delay: 1.2 }}
+                whileHover={{ scale: 1.05, transition: { duration: 0.2 } }}
+                className="absolute -right-12 top-1/2 bg-[var(--card)] border border-[var(--border)] rounded-2xl p-3 shadow-xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-wider text-[var(--amber)] z-20 cursor-default select-none"
+              >
                 <Pill size={14} /> Medicines
-              </div>
+              </motion.div>
             </div>
           </motion.div>
         </div>
       </section>
 
-      <div className="features-bar">
-        <div className="features-scroll">
-          <div className="f-item"><MessageSquare size={18} /> AI Health Chat</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Search size={18} /> Symptom Checker</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Clipboard size={18} /> Prescription Scanner</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><BarChart3 size={18} /> Health Journal</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Pill size={18} /> Medicine Delivery</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Hospital size={18} /> Hospital Finder</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Users size={18} /> Family Health</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Shield size={18} /> Insurance Advice</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><GraduationCap size={18} /> Medical Education</div>
-          <div className="f-dot"></div>
-          {/* Duplicate for seamless loop */}
-          <div className="f-item"><MessageSquare size={18} /> AI Health Chat</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Search size={18} /> Symptom Checker</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Clipboard size={18} /> Prescription Scanner</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><BarChart3 size={18} /> Health Journal</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Pill size={18} /> Medicine Delivery</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Hospital size={18} /> Hospital Finder</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Users size={18} /> Family Health</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><Shield size={18} /> Insurance Advice</div>
-          <div className="f-dot"></div>
-          <div className="f-item"><GraduationCap size={18} /> Medical Education</div>
-          <div className="f-dot"></div>
+      <div className="border-y border-[var(--border)] bg-[var(--surface)] py-6 relative z-10 overflow-hidden">
+        <div className="max-w-[1100px] mx-auto px-6">
+          <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-4 text-center md:justify-between text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--text2)] opacity-80">
+            <span className="flex items-center gap-2"><MessageSquare size={14} className="text-[var(--teal)]" /> AI Health Chat</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--border)] hidden md:inline-block" />
+            <span className="flex items-center gap-2"><Search size={14} className="text-[var(--teal)]" /> Symptom Checker</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--border)] hidden lg:inline-block" />
+            <span className="flex items-center gap-2"><Clipboard size={14} className="text-[var(--teal)]" /> Prescription Scanner</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--border)] hidden md:inline-block" />
+            <span className="flex items-center gap-2"><BarChart3 size={14} className="text-[var(--teal)]" /> Health Journal</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--border)] hidden lg:inline-block" />
+            <span className="flex items-center gap-2"><Pill size={14} className="text-[var(--teal)]" /> Medicine Delivery</span>
+          </div>
         </div>
       </div>
 
-      <section className="features-section py-24 bg-[var(--bg)]" id="features">
+      <section className="py-24 bg-[var(--bg)]" id="features">
         <div className="max-w-[1100px] mx-auto px-6">
           <div className="text-center mb-16">
             <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] mb-4 block">Everything you need</span>
             <h2 className="font-serif text-[clamp(30px,4vw,44px)] leading-[1.15] tracking-tight mb-4 text-[var(--text)]">One app for your <em>entire</em> health journey</h2>
-            <p className="text-[var(--text2)] max-w-[540px] mx-auto">From daily symptoms to emergency guidance — Veda covers it all, powered by Google Gemini AI.</p>
+            <p className="text-[var(--text2)] max-w-[540px] mx-auto text-base">From daily symptoms to emergency guidance — Veda covers it all, powered by Google Gemini AI.</p>
           </div>
-          <div className="features-grid">
-            <div className="feature-card featured">
-              <div className="feature-icon"><Stethoscope size={24} /></div>
-              <div className="font-serif text-2xl mb-3 text-[var(--text)]">AI Health Chat</div>
-              <div className="text-[14px] text-[var(--text2)] leading-relaxed mb-6 font-medium opacity-80">Describe your symptoms in plain language — Veda gives you instant health guidance, remembering your history and medications across conversations.</div>
-              <div className="flex gap-2 flex-wrap">
-                <div className="feature-tag">✦ 10 Languages</div>
-                <div className="feature-tag">✦ Memory across sessions</div>
-                <div className="feature-tag">✦ Gemini 2.0 Flash</div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch pt-4">
+            {/* Left Nav Tabs - 5 Columns */}
+            <div className="lg:col-span-5 flex flex-col gap-4">
+              {[
+                {
+                  title: "AI Consultation",
+                  subtitle: "Instant clinical guidance in plain language",
+                  description: "Describe physical symptoms naturally. Veda leverages advanced medical models to evaluate your query, considering your full chronological health history and active medications.",
+                  icon: Stethoscope,
+                  badge: "Gemini 2.0 Flash"
+                },
+                {
+                  title: "Health Journal & Scoring",
+                  subtitle: "Log your vitals & track long-term wellness",
+                  description: "Track everyday metrics like blood pressure, blood sugar, mood, and sleep. Veda synthesizes this telemetry into an evolving personal AI Wellness Score to map patterns over time.",
+                  icon: BarChart3,
+                  badge: "Dynamic Score"
+                },
+                {
+                  title: "Prescription Scan",
+                  subtitle: "Vision model translation of cursive scripts",
+                  description: "Take or upload a photo of handwritten doctor scripts. Our specialized computer vision translates scribbled notes into clear, structured instructions on dosage, timing, and direct intake guidelines.",
+                  icon: Clipboard,
+                  badge: "AI OCR Vision"
+                },
+                {
+                  title: "Lab Report Decipherer",
+                  subtitle: "Understand your blood work in plain English",
+                  description: "No more confusing medical jargon. Upload complex blood tests, biochemical assays, or urine panels. Veda interprets the biomarkers and flags outliers relative to clinical reference ranges.",
+                  icon: FlaskConical,
+                  badge: "Diagnostics"
+                },
+                {
+                  title: "Hospital & Emergency Finder",
+                  subtitle: "Locate specialist clinical care near you",
+                  description: "In urgent medical situations, Veda filters active emergency wards, specialized healthcare centers, or regional pharmacies based on your prompt, complete with instant maps and contact utilities.",
+                  icon: Hospital,
+                  badge: "Active Direction"
+                }
+              ].map((feat, index) => {
+                const IconComponent = feat.icon;
+                const isActive = activeFeature === index;
+                return (
+                  <motion.button
+                    key={index}
+                    onClick={() => setActiveFeature(index)}
+                    whileHover={{ x: isActive ? 0 : 6 }}
+                    className="w-full text-left p-5 rounded-2xl transition-all duration-300 flex items-start gap-4 cursor-pointer focus:outline-none relative overflow-hidden h-full min-h-[110px]"
+                  >
+                    {isActive && (
+                      <motion.div
+                        layoutId="activeFeatureIndicator"
+                        className="absolute inset-0 bg-[var(--card)] border border-[var(--teal)] shadow-[0_8px_30px_rgba(13,148,136,0.06)] rounded-2xl z-0"
+                        transition={{ type: "spring", stiffness: 300, damping: 28 }}
+                      />
+                    )}
+                    {!isActive && (
+                      <div className="absolute inset-0 bg-[var(--surface)] border border-[var(--border)] rounded-2xl hover:bg-[var(--card)] hover:border-[var(--muted)] opacity-75 hover:opacity-100 transition-colors z-0" />
+                    )}
+                    <div className="relative z-10 flex items-start gap-4 w-full">
+                      <div className={`p-3 rounded-xl transition-colors duration-300 shrink-0 ${
+                        isActive ? 'bg-[var(--teal-glow)] text-[var(--teal)]' : 'bg-[var(--bg)] text-[var(--text2)]'
+                      }`}>
+                        <IconComponent size={20} />
+                      </div>
+                      <div className="space-y-1 pr-2">
+                        <div className="flex items-center gap-2.5">
+                          <span className="font-serif text-lg font-bold text-[var(--text)]">{feat.title}</span>
+                          {isActive && (
+                            <span className="inline-block px-2 py-0.5 text-[8px] font-black uppercase tracking-wider bg-[var(--teal-glow)] text-[var(--teal)] rounded border border-[var(--teal-line)]">
+                              {feat.badge}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-[var(--text2)] leading-relaxed font-semibold">
+                          {isActive ? feat.description : feat.subtitle}
+                        </p>
+                      </div>
+                    </div>
+                  </motion.button>
+                );
+              })}
+            </div>
+
+            {/* Right Interactive Mockup Side - 7 Columns */}
+            <div className="lg:col-span-7 bg-[var(--card)] border border-[var(--border)] rounded-[32px] p-6 sm:p-8 flex flex-col justify-between shadow-xl relative overflow-hidden min-h-[480px]">
+              {/* Subtle background glow */}
+              <div 
+                className="absolute inset-0 opacity-[0.03] dark:opacity-[0.05] pointer-events-none transition-all duration-700" 
+                style={{ 
+                  backgroundImage: 'radial-gradient(circle at 75% 25%, var(--teal) 0%, transparent 60%)',
+                }} 
+              />
+              
+              {/* Fake Window Header bar */}
+              <div className="flex items-center justify-between pb-6 border-b border-[var(--border)] relative z-10 shrink-0">
+                <div className="flex items-center gap-1.5 w-full justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 bg-red-500/80 rounded-full" />
+                    <div className="w-2.5 h-2.5 bg-amber-500/80 rounded-full" />
+                    <div className="w-2.5 h-2.5 bg-teal-500/80 rounded-full" />
+                    <span className="text-[10px] font-bold text-[var(--text2)] tracking-widest uppercase ml-2 opacity-60">
+                      Veda Interactive Simulator
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-mono px-2 py-0.5 bg-[var(--surface)] text-[var(--teal)] border border-[var(--border)] rounded">
+                    Active Module
+                  </span>
+                </div>
               </div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><BarChart3 size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Health Journal</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Log vitals and mood daily. See patterns and trends with an AI health score.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><Clipboard size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Prescription Scanner</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">AI vision reads any prescription, clarifying dosage and instructions instantly.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><FlaskConical size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Lab Reports</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Explains blood tests and reports in plain language for complete clarity.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><Hospital size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Hospital Finder</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Instantly find the nearest specialist or emergency care in your city.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><ShoppingCart size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Medicine Delivery</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Easily search and order medicines directly from top trusted distributors.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><Users size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Family Health</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Manage health profiles for your entire family in one private account.</div>
-            </div>
-            <div className="feature-card">
-              <div className="feature-icon"><Bell size={20} /></div>
-              <div className="font-serif text-xl mb-2 text-[var(--text)]">Preventive Alerts</div>
-              <div className="text-[13.5px] text-[var(--text2)] leading-relaxed">Smart reminders personalized for your age, condition, and medical history.</div>
+
+              {/* Dynamic Mockup Body with smooth fade */}
+              <div className="flex-1 py-6 flex flex-col justify-center relative z-10 overflow-hidden">
+                {activeFeature === 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key="mock-chat-clinical"
+                    className="space-y-4"
+                  >
+                    <div className="flex gap-3">
+                      <div className="p-3.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-xs leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
+                        Hello. Based on your symptoms of high fever and muscle aches post tropical travel, we'll monitor closely. I note your daily intake of amlodipine. 
+                      </div>
+                    </div>
+                    <div className="flex flex-row-reverse gap-3">
+                      <div className="p-3.5 bg-[var(--teal)] text-white dark:text-[#020617] font-bold rounded-2xl rounded-tr-sm text-xs leading-relaxed max-w-[80%] shadow-lg">
+                        I am experiencing severe headache and recurring chills too.
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <div className="p-3.5 bg-[var(--teal-glow)] border border-[var(--teal-line)] rounded-2xl rounded-tl-sm text-xs leading-relaxed max-w-[85%] text-[var(--text)] font-medium">
+                        Keep hydrated. When on amlodipine, it is critical to avoid system-level NSAIDs like ibuprofen until a brief blood diagnostic panel counts out dengue risks. Let's find a nearby testing center.
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {activeFeature === 1 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key="mock-journal-clinical"
+                    className="space-y-6"
+                  >
+                    <div className="flex justify-between items-center bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+                      <div>
+                        <div className="text-[10px] text-[var(--text2)] font-black uppercase tracking-widest opacity-60">Personal AI Wellness Score</div>
+                        <div className="text-3xl font-serif font-black text-[var(--teal)] mt-1">84 / 100 <span className="text-xs text-emerald-500 font-sans font-bold block sm:inline">Excellent ▴ +3% this week</span></div>
+                      </div>
+                      <div className="w-12 h-12 rounded-full border-4 border-[var(--teal)] border-t-transparent animate-spin duration-[3000ms] hidden sm:block" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-xl space-y-1">
+                        <div className="text-[10px] text-[var(--text2)] font-bold uppercase opacity-60">Blood Pressure</div>
+                        <div className="text-base font-bold text-[var(--text)]">120/80 <span className="text-[10px] text-emerald-500 font-medium">Normal</span></div>
+                      </div>
+                      <div className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-xl space-y-1">
+                        <div className="text-[10px] text-[var(--text2)] font-bold uppercase opacity-60">Fasting Blood Sugar</div>
+                        <div className="text-base font-bold text-[var(--text)]">98 mg/dL <span className="text-[10px] text-emerald-500 font-medium">Target</span></div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-[var(--text2)] font-medium leading-relaxed italic opacity-85">
+                      💡 Veda Insight: Daily BP readings are stabilizing beautifully within the target ranges. Keep up consistent tracking of morning readings!
+                    </p>
+                  </motion.div>
+                )}
+
+                {activeFeature === 2 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key="mock-scanner-clinical"
+                    className="space-y-4"
+                  >
+                    <div className="border border-dashed border-[var(--teal)] bg-[var(--teal-glow)] rounded-2xl p-5 text-center relative overflow-hidden flex flex-col items-center justify-center py-6">
+                      <div className="absolute top-2 left-2 w-4 h-4 border-t-2 border-l-2 border-[var(--teal)]" />
+                      <div className="absolute top-2 right-2 w-4 h-4 border-t-2 border-r-2 border-[var(--teal)]" />
+                      <div className="absolute bottom-2 left-2 w-4 h-4 border-b-2 border-l-2 border-[var(--teal)]" />
+                      <div className="absolute bottom-2 right-2 w-4 h-4 border-b-2 border-r-2 border-[var(--teal)]" />
+                      
+                      <div className="w-10 h-10 rounded-full bg-[var(--bg)] flex items-center justify-center text-[var(--teal)] mb-2 animate-pulse">
+                        <Scan size={20} />
+                      </div>
+                      <div className="text-xs font-bold text-[var(--teal)] tracking-wider uppercase mb-1">OCR Translation Active</div>
+                    </div>
+                    
+                    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 text-[11px] font-mono leading-relaxed space-y-1">
+                      <div className="text-[10px] font-bold text-amber-500">DETECTED RX SUBSTANCE:</div>
+                      <div>→ <span className="text-[var(--text)] font-semibold">Amlodipine Besylate (5mg)</span></div>
+                      <div className="text-emerald-500">→ Schedule: Take 1 tablet daily every morning</div>
+                      <div className="text-[var(--text2)] opacity-85">→ Clinical advice: Maintain hydration, avoid high-sodium meals</div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {activeFeature === 3 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key="mock-labs-clinical"
+                    className="space-y-4"
+                  >
+                    <div className="text-[13px] text-[var(--text)] font-bold mb-1">Deciphered Biological Assays</div>
+                    <div className="space-y-2.5">
+                      <div className="p-3 bg-[var(--surface)] border border-[var(--border)] rounded-xl flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-bold text-[var(--text)]">Hemoglobin (Hb)</span>
+                          <span className="block text-[9px] text-[var(--text2)] font-medium">Reference: 13.8 - 17.2 g/dL</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-bold text-amber-500">11.4 g/dL ▾</span>
+                          <span className="block text-[9px] text-amber-400 font-medium">Mild Anemia Marker</span>
+                        </div>
+                      </div>
+                      
+                      <div className="p-3 bg-[var(--surface)] border border-[var(--border)] rounded-xl flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-bold text-[var(--text)]">Platelets</span>
+                          <span className="block text-[9px] text-[var(--text2)] font-medium">Reference: 150 - 450 k/uL</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-bold text-emerald-500">210 k/uL ✓</span>
+                          <span className="block text-[9px] text-emerald-500 font-medium uppercase font-bold">Optimal</span>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {activeFeature === 4 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key="mock-maps-clinical"
+                    className="space-y-4"
+                  >
+                    <div className="text-xs font-bold text-[var(--text)] mb-1">Emergency Centers Nearest Your IP</div>
+                    <div className="space-y-3">
+                      <div className="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl flex items-center justify-between hover:border-[var(--teal)] transition-all">
+                        <div className="space-y-0.5">
+                          <div className="text-xs font-bold text-[var(--text)]">City Central Emergency ER</div>
+                          <span className="block text-[10px] text-emerald-500 font-bold">● OPEN 24 HOURS (0.8 miles away)</span>
+                        </div>
+                        <button className="px-3 py-1.5 bg-[var(--teal)] text-white dark:text-[#020617] font-bold text-[10px] rounded-lg tracking-wider uppercase">Route Map</button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+
+              {/* Bottom persistent device indicator */}
+              <div className="text-center pt-4 border-t border-[var(--border)] text-[9px] font-black uppercase tracking-[0.3em] text-[var(--muted)] relative z-10 shrink-0">
+                🔒 HIPAA Compliant & End-to-End Encrypted
+              </div>
             </div>
           </div>
         </div>
       </section>
-
-      <section className="showcase-section py-24 bg-[var(--bg)] border-y border-[var(--border)]">
+      <motion.section 
+        initial={{ opacity: 0 }}
+        whileInView={{ opacity: 1 }}
+        viewport={{ once: true, margin: "-120px" }}
+        transition={{ duration: 0.8 }}
+        className="showcase-section py-24 bg-[var(--bg)] border-y border-[var(--border)] relative overflow-hidden" 
+        id="features-showcase"
+      >
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="showcase-row">
-            <div>
-              <div className="showcase-tag bg-[var(--teal-glow)] text-[var(--teal)]"><Stethoscope size={16} /> Second Opinion</div>
+          <div className="showcase-row grid md:grid-cols-2 gap-12 items-center">
+            <motion.div
+              initial={{ opacity: 0, x: -30 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ type: "spring", stiffness: 100, damping: 18 }}
+            >
+              <div className="showcase-tag inline-flex items-center gap-2 px-3 py-1.5 bg-[var(--teal-glow)] text-[var(--teal)] rounded-full text-xs font-bold mb-4"><Stethoscope size={16} /> Second Opinion</div>
               <h3 className="font-serif text-4xl mb-6 leading-[1.1] tracking-tight text-[var(--text)]">Get a second opinion on any diagnosis</h3>
-              <p className="text-lg text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-80">Worried about what your doctor said? Veda evaluates your diagnosis and lab reports, giving you an evidence-based second opinion.</p>
-              <ul className="showcase-list">
-                <li>Instant lab report analysis</li>
-                <li>Evaluate treatment options</li>
-                <li>Questions for your next visit</li>
+              <p className="text-base text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-85">Worried about what your doctor said? Veda evaluates your diagnosis and lab reports, giving you an evidence-based second opinion.</p>
+              <ul className="showcase-list space-y-3 pl-0 list-none">
+                {[
+                  "Instant lab report analysis",
+                  "Evaluate treatment options",
+                  "Questions for your next visit"
+                ].map((item, index) => (
+                  <motion.li 
+                    key={index} 
+                    initial={{ opacity: 0, x: -10 }}
+                    whileInView={{ opacity: 1, x: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ delay: index * 0.1 }}
+                    className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text2)]"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--teal)] shrink-0" />
+                    {item}
+                  </motion.li>
+                ))}
               </ul>
-            </div>
-          <div className="showcase-visual">
-              <div className="sv-header">
-                <div className="sv-dots"><div className="sv-dot bg-[var(--red)]" /><div className="sv-dot bg-[var(--amber)]" /><div className="sv-dot bg-[var(--teal)]" /></div>
-                <span className="text-[11px] font-black uppercase tracking-widest text-[var(--muted)] ml-2">Analysis Report</span>
+            </motion.div>
+            
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              whileInView={{ opacity: 1, scale: 1 }}
+              viewport={{ once: true }}
+              transition={{ type: "spring", stiffness: 100, damping: 16 }}
+              className="showcase-visual bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 shadow-xl relative overflow-hidden"
+            >
+              <div className="sv-header flex items-center justify-between pb-4 border-b border-[var(--border)] mb-4">
+                <div className="sv-dots flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-[var(--red)] opacity-80" /><div className="w-2.5 h-2.5 rounded-full bg-[var(--amber)] opacity-80" /><div className="w-2.5 h-2.5 rounded-full bg-[var(--teal)] opacity-80" /></div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Analysis Report</span>
               </div>
-              <div className="sv-content">
-                <div className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl mb-4">
+              <div className="sv-content space-y-4">
+                <motion.div 
+                  whileHover={{ scale: 1.02 }}
+                  className="p-4 bg-[var(--bg)] border border-[var(--border)] rounded-2xl cursor-default"
+                >
                   <div className="text-[10px] text-[var(--teal)] font-black uppercase tracking-widest mb-1.5 opacity-60">Status</div>
-                  <div className="text-sm font-bold text-[var(--teal)]">Consistent Diagnosis</div>
-                  <div className="text-[12px] text-[var(--text2)] mt-1 font-medium italic opacity-80">Type 2 Diabetes — alignments noted with HbA1c</div>
-                </div>
-                <div className="text-[13px] text-[var(--text2)] font-medium">
-                  <div className="text-[var(--text)] font-semibold mb-2">Recommended Steps:</div>
-                  <div className="mb-1 opacity-80">→ Verify with fasting glucose</div>
-                  <div className="mb-1 opacity-80">→ Monitor carbohydrate intake</div>
+                  <div className="text-sm font-bold text-[var(--teal)] flex items-center gap-1.5">Consistent Diagnosis ✓</div>
+                  <div className="text-[12px] text-[var(--text2)] mt-1 font-semibold italic opacity-85">Type 2 Diabetes — alignments noted with HbA1c</div>
+                </motion.div>
+                <div className="text-[13px] text-[var(--text2)] font-semibold space-y-2">
+                  <div className="text-[var(--text)] font-extrabold mb-1">Recommended Steps:</div>
+                  <div className="flex items-center gap-2 opacity-85">→ Verify with fasting glucose</div>
+                  <div className="flex items-center gap-2 opacity-85">→ Monitor carbohydrate intake</div>
                 </div>
               </div>
-            </div>
+            </motion.div>
           </div>
 
-          <div className="showcase-row reverse mt-32">
-            <div>
-              <div className="showcase-tag bg-[var(--teal-glow)] text-[var(--teal)]"><BarChart3 size={16} /> Health Score</div>
+          <div className="showcase-row grid md:grid-cols-2 gap-12 items-center mt-32">
+            <motion.div
+              initial={{ opacity: 0, x: 30 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ type: "spring", stiffness: 100, damping: 18 }}
+              className="md:order-2"
+            >
+              <div className="showcase-tag inline-flex items-center gap-2 px-3 py-1.5 bg-[var(--teal-glow)] text-[var(--teal)] rounded-full text-xs font-bold mb-4"><BarChart3 size={16} /> Health Score</div>
               <h3 className="font-serif text-4xl mb-6 leading-[1.1] tracking-tight text-[var(--text)]">Your health, visualised in a simple score</h3>
-              <p className="text-lg text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-80">Veda calculates a personalized Health Score based on your daily activity, vitals, and consistency. Simple, powerful tracking.</p>
-              <ul className="showcase-list">
-                <li>Mood and Sleep tracking</li>
-                <li>7-day trend analysis</li>
-                <li>AI-powered improvement tips</li>
+              <p className="text-base text-[var(--text2)] leading-relaxed mb-8 font-medium opacity-85">Veda calculates a personalized Health Score based on your daily activity, vitals, and consistency. Simple, powerful tracking.</p>
+              <ul className="showcase-list space-y-3 pl-0 list-none">
+                {[
+                  "Mood and Sleep tracking",
+                  "7-day trend analysis",
+                  "AI-powered improvement tips"
+                ].map((item, index) => (
+                  <motion.li 
+                    key={index} 
+                    initial={{ opacity: 0, x: 10 }}
+                    whileInView={{ opacity: 1, x: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ delay: index * 0.1 }}
+                    className="flex items-center gap-2.5 text-sm font-semibold text-[var(--text2)]"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--teal)] shrink-0" />
+                    {item}
+                  </motion.li>
+                ))}
               </ul>
-            </div>
-          <div className="showcase-visual">
-              <div className="sv-header">
-                <div className="sv-dots"><div className="sv-dot bg-[var(--red)]" /><div className="sv-dot bg-[var(--amber)]" /><div className="sv-dot bg-[var(--teal)]" /></div>
-                <span className="text-[11px] font-black uppercase tracking-widest text-[var(--muted)] ml-2">Health Metrics</span>
+            </motion.div>
+            
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              whileInView={{ opacity: 1, scale: 1 }}
+              viewport={{ once: true }}
+              transition={{ type: "spring", stiffness: 100, damping: 16 }}
+              className="showcase-visual bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 shadow-xl relative overflow-hidden md:order-1"
+            >
+              <div className="sv-header flex items-center justify-between pb-4 border-b border-[var(--border)] mb-4">
+                <div className="sv-dots flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-[var(--red)] opacity-80" /><div className="w-2.5 h-2.5 rounded-full bg-[var(--amber)] opacity-80" /><div className="w-2.5 h-2.5 rounded-full bg-[var(--teal)] opacity-80" /></div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-[var(--muted)]">Health Metrics</span>
               </div>
               <div className="sv-content text-center">
                 <div className="relative inline-block my-4">
                   <svg viewBox="0 0 120 120" width="120" height="120">
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="6"/>
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--teal)" strokeWidth="6"
-                      strokeLinecap="round" strokeDasharray="314" strokeDashoffset="72"
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="6" className="opacity-40" />
+                    <motion.circle 
+                      cx="60" 
+                      cy="60" 
+                      r="50" 
+                      fill="none" 
+                      stroke="var(--teal)" 
+                      strokeWidth="6"
+                      strokeLinecap="round" 
+                      initial={{ strokeDashoffset: 314 }}
+                      whileInView={{ strokeDashoffset: 72 }}
+                      viewport={{ once: true, margin: "-40px" }}
+                      transition={{ duration: 1.8, ease: "easeOut", delay: 0.3 }}
+                      strokeDasharray="314"
                       transform="rotate(-90 60 60)"
                     />
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <div className="font-serif text-3xl text-[var(--teal)]">77</div>
-                    <div className="text-[10px] text-[var(--muted)] font-black uppercase">Score</div>
+                    <motion.div 
+                      initial={{ scale: 0.5, opacity: 0 }}
+                      whileInView={{ scale: 1, opacity: 1 }}
+                      viewport={{ once: true }}
+                      transition={{ type: "spring", stiffness: 150, delay: 0.8 }}
+                      className="font-serif text-3.5xl text-[var(--text)] font-black"
+                    >
+                      77
+                    </motion.div>
+                    <div className="text-[9px] text-[var(--muted)] font-black uppercase tracking-wider">Score</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-left">
-                  <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-2.5">
-                    <div className="text-[10px] text-[var(--muted)] font-bold uppercase">Mood</div>
-                    <div className="text-sm font-bold text-[var(--teal)]">Good</div>
-                  </div>
-                  <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-2.5">
-                    <div className="text-[10px] text-[var(--muted)] font-bold uppercase">Sleep</div>
-                    <div className="text-sm font-bold text-[var(--teal)]">Optimal</div>
-                  </div>
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-3"
+                  >
+                    <div className="text-[10px] text-[var(--muted)] font-black uppercase tracking-wider">Mood</div>
+                    <div className="text-sm font-extrabold text-[var(--teal)] mt-0.5">Good 😊</div>
+                  </motion.div>
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-3"
+                  >
+                    <div className="text-[10px] text-[var(--muted)] font-black uppercase tracking-wider">Sleep</div>
+                    <div className="text-sm font-extrabold text-[var(--teal)] mt-0.5">Optimal 🛏️</div>
+                  </motion.div>
                 </div>
               </div>
-            </div>
+            </motion.div>
           </div>
         </div>
-      </section>
+      </motion.section>
 
       <section className="numbers-section py-24 bg-[var(--bg)] border-b border-[var(--border)]">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="numbers-grid rounded-[2.5rem] overflow-hidden border border-[var(--border)]">
-            <div className="number-card bg-[var(--surface)]">
-              <div className="number-val">23+</div>
-              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Features</div>
-            </div>
-            <div className="number-card bg-[var(--surface)]">
-              <div className="number-val">10</div>
-              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Languages</div>
-            </div>
-            <div className="number-card bg-[var(--surface)]">
-              <div className="number-val">100%</div>
-              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Privacy</div>
-            </div>
-            <div className="number-card bg-[var(--surface)]">
-              <div className="number-val">24/7</div>
-              <div className="text-[14px] text-[var(--text)] mt-2 font-black uppercase tracking-widest opacity-60">Available</div>
-            </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 rounded-[2.5rem] overflow-hidden border border-[var(--border)] p-2 bg-[var(--surface)]">
+            {[
+              { val: "23+", label: "Features", color: "var(--teal)" },
+              { val: "10", label: "Languages", color: "var(--purple)" },
+              { val: "100%", label: "Privacy", color: "var(--red)" },
+              { val: "24/7", label: "Available", color: "var(--amber)" }
+            ].map((stat, i) => (
+              <motion.div 
+                key={i}
+                whileHover={{ scale: 1.03, backgroundColor: "var(--card)" }}
+                className="number-card bg-[var(--surface)] p-8 text-center rounded-[2rem] transition-all relative overflow-hidden group border border-transparent hover:border-[var(--border)] cursor-default select-none"
+              >
+                <div 
+                  className="number-val text-[clamp(28px,4vw,38px)] font-serif font-black"
+                  style={{ color: stat.color }}
+                >
+                  {stat.val}
+                </div>
+                <div className="text-[11px] text-[var(--text2)] mt-2 font-black uppercase tracking-[0.2em] opacity-75">{stat.label}</div>
+              </motion.div>
+            ))}
           </div>
         </div>
       </section>
 
       <section className="how-section py-24 bg-[var(--bg)]" id="how">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="text-center mb-20">
+          <div className="text-center mb-16">
             <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[3px] mb-4 block">Frictionless Experience</span>
             <h2 className="font-serif text-[clamp(34px,5vw,48px)] leading-[1.05] tracking-tight mb-4 text-[var(--text)]">Ready in <em className="italic text-[var(--teal)] not-italic">seconds</em></h2>
-            <p className="text-lg text-[var(--text2)] max-w-[540px] mx-auto font-medium opacity-80">Skip the complex setup. Open and talk to Veda instantly.</p>
+            <p className="text-lg text-[var(--text2)] max-w-[540px] mx-auto font-medium opacity-85">Skip the complex setup. Open and talk to Veda instantly.</p>
           </div>
-          <div className="how-steps">
-            <div className="text-center px-6">
-              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">1</div>
-              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Open</div>
-              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">No signup required. Launch the app and start your conversation.</div>
-            </div>
-            <div className="text-center px-6">
-              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">2</div>
-              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Personalize</div>
-              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">Set your basic profile so Veda gives accurate, personal responses.</div>
-            </div>
-            <div className="text-center px-6">
-              <div className="step-num bg-[var(--teal-glow)] text-[var(--teal)] border-[var(--teal-line)]">3</div>
-              <div className="font-serif text-2xl mb-3 text-[var(--text)]">Track</div>
-              <div className="text-[14px] text-[var(--text2)] leading-relaxed font-medium opacity-80">Log your health journey and see AI-driven insights over time.</div>
-            </div>
+          <div className="how-steps grid md:grid-cols-3 gap-12 relative">
+            <div className="absolute top-12 left-1/6 right-1/6 h-[1px] border-t border-dashed border-[var(--border)] z-0 hidden md:block" />
+            
+            {[
+              { num: 1, title: "Open", text: "No signup required. Launch the app and start your conversation." },
+              { num: 2, title: "Personalize", text: "Set your basic profile so Veda gives accurate, personal responses." },
+              { num: 3, title: "Track", text: "Log your health journey and see AI-driven insights over time." }
+            ].map((step, i) => (
+              <motion.div 
+                key={i}
+                whileHover={{ y: -8 }}
+                className="text-center px-6 relative z-10 flex flex-col items-center cursor-default"
+              >
+                <div className="step-num w-16 h-16 rounded-full flex items-center justify-center font-serif text-2xl font-bold bg-[var(--teal-glow)] text-[var(--teal)] border border-[var(--teal-line)] mb-6 transition-all duration-300">
+                  {step.num}
+                </div>
+                <div className="font-serif text-2xl mb-3 text-[var(--text)] font-bold">{step.title}</div>
+                <div className="text-[14px] text-[var(--text2)] leading-relaxed font-semibold opacity-85">{step.text}</div>
+              </motion.div>
+            ))}
           </div>
         </div>
       </section>
@@ -1326,111 +1720,138 @@ function AppContent() {
         <div className="max-w-[1100px] mx-auto px-6">
           <div className="text-center mb-16">
             <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] mb-4 block">Real people, real impact</span>
-            <h2 className="font-serif text-[clamp(30px,4vw,44px)] leading-[1.15] tracking-tight mb-4">Trusted by families <em>across India</em></h2>
+            <h2 className="font-serif text-[clamp(30px,4vw,44px)] leading-[1.15] tracking-tight mb-4 text-[var(--text)]">Trusted by families <em>across India</em></h2>
           </div>
-          <div className="testimonials-grid">
-            <div className="testimonial-card">
-              <div className="t-stars">★★★★★</div>
-              <p className="text-[14.5px] text-[var(--text2)] leading-relaxed mb-4.5 italic">"Mere papa ko diabetes hai — unki HbA1c report Veda ne explain ki jab doctor ke paas time nahi tha. Bahut kaam aaya!"</p>
-              <div className="t-author">
-                <div className="t-avatar bg-[var(--teal)]/10 text-[var(--teal)]"><User size={20} /></div>
+          <div className="testimonials-grid grid md:grid-cols-3 gap-8">
+            {[
+              {
+                text: "Mere papa ko diabetes hai — unki HbA1c report Veda ne explain ki jab doctor ke paas time nahi tha. Bahut kaam aaya!",
+                author: "Rohit Sharma",
+                role: "Delhi · Software Engineer",
+                color: "var(--teal)"
+              },
+              {
+                text: "I use it for my family of 5 — different profiles, different conditions. The preventive alerts reminded me about my mother's thyroid checkup!",
+                author: "Priya Nair",
+                role: "Bengaluru · HR Manager",
+                color: "var(--purple)"
+              },
+              {
+                text: "As a medical student, the case study mode and drug interaction quizzes are incredibly helpful. Better than most study apps I've tried.",
+                author: "Arjun Mehta",
+                role: "Mumbai · MBBS 3rd Year",
+                color: "var(--blue)"
+              }
+            ].map((test, i) => (
+              <motion.div 
+                key={i}
+                whileHover={{ y: -8, boxShadow: "0 20px 40px rgba(0,0,0,0.06)" }}
+                className="testimonial-card bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 shadow-md cursor-default flex flex-col justify-between"
+              >
                 <div>
-                  <div className="text-[13.5px] font-bold">Rohit Sharma</div>
-                  <div className="text-[12px] text-[var(--muted)]">Delhi · Software Engineer</div>
+                  <div className="t-stars text-amber-400 mb-4">★★★★★</div>
+                  <p className="text-[14.5px] text-[var(--text2)] leading-relaxed mb-6 font-semibold italic">"{test.text}"</p>
                 </div>
-              </div>
-            </div>
-            <div className="testimonial-card">
-              <div className="t-stars">★★★★★</div>
-              <p className="text-[14.5px] text-[var(--text2)] leading-relaxed mb-4.5 italic">"I use it for my family of 5 — different profiles, different conditions. The preventive alerts reminded me about my mother's thyroid checkup!"</p>
-              <div className="t-author">
-                <div className="t-avatar bg-[var(--purple)]/10 text-[var(--purple)]"><User size={20} /></div>
-                <div>
-                  <div className="text-[13.5px] font-bold">Priya Nair</div>
-                  <div className="text-[12px] text-[var(--muted)]">Bengaluru · HR Manager</div>
+                <div className="t-author flex items-center gap-3.5 border-t border-[var(--border)] pt-4">
+                  <div className="t-avatar w-10 h-10 rounded-full flex items-center justify-center font-bold" style={{ backgroundColor: `${test.color}15`, color: test.color }}>
+                    <User size={18} />
+                  </div>
+                  <div>
+                    <div className="text-[13.5px] font-black text-[var(--text)]">{test.author}</div>
+                    <div className="text-[11.5px] text-[var(--muted)] font-bold">{test.role}</div>
+                  </div>
                 </div>
-              </div>
-            </div>
-            <div className="testimonial-card">
-              <div className="t-stars">★★★★★</div>
-              <p className="text-[14.5px] text-[var(--text2)] leading-relaxed mb-4.5 italic">"As a medical student, the case study mode and drug interaction quizzes are incredibly helpful. Better than most study apps I've tried."</p>
-              <div className="t-author">
-                <div className="t-avatar bg-[var(--blue)]/10 text-[var(--blue)]"><User size={20} /></div>
-                <div>
-                  <div className="text-[13.5px] font-bold">Arjun Mehta</div>
-                  <div className="text-[12px] text-[var(--muted)]">Mumbai · MBBS 3rd Year</div>
-                </div>
-              </div>
-            </div>
+              </motion.div>
+            ))}
           </div>
         </div>
       </section>
 
       <section className="cta-section py-24">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="cta-box glass border-white/20">
-            <h2 className="font-serif text-[clamp(30px,4vw,46px)] leading-[1.15] tracking-tight mb-4 relative">Your health deserves<br />an <em>intelligent companion</em></h2>
-            <p className="text-[16px] text-[var(--text2)] max-w-[480px] mx-auto mb-9 leading-relaxed">Join thousands using Veda for smarter, more informed health decisions — in the language you're most comfortable with.</p>
-            <div className="flex flex-wrap items-center justify-center gap-3.5">
-              <button onClick={handleStart} className="btn-primary text-base px-8 py-4 border border-white/20">
+          <motion.div 
+            whileHover={{ scale: 1.01 }}
+            className="cta-box glass border-white/20 p-12 sm:p-16 rounded-[3rem] text-center shadow-2xl relative overflow-hidden"
+          >
+            {/* Animated neon circles behind CTA */}
+            <div className="absolute top-0 right-0 w-80 h-80 bg-[var(--teal-glow)] rounded-full blur-[60px] opacity-40 -translate-y-12 translate-x-12 pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-80 h-80 bg-[var(--teal-glow)] rounded-full blur-[60px] opacity-40 translate-y-12 -translate-x-12 pointer-events-none" />
+
+            <h2 className="font-serif text-[clamp(30px,4vw,46px)] leading-[1.15] tracking-tight mb-4 relative text-[var(--text)]">Your health deserves<br />an <em>intelligent companion</em></h2>
+            <p className="text-[16px] text-[var(--text2)] max-w-[480px] mx-auto mb-9 leading-relaxed font-semibold opacity-85">Join thousands using Veda for smarter, more informed health decisions — in the language you're most comfortable with.</p>
+            <div className="flex flex-wrap items-center justify-center gap-4 relative z-10">
+              <motion.button 
+                onClick={handleStart} 
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="btn-primary text-base px-10 py-5 border border-white/20 shadow-xl shadow-[var(--teal)]/15 cursor-pointer"
+              >
                 <Stethoscope size={20} /> Open Veda Free
-              </button>
-              <a href="#features" className="btn-secondary text-base px-8 py-4 glass border-white/10">Learn more →</a>
+              </motion.button>
+              <motion.a 
+                href="#features" 
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="btn-secondary text-base px-10 py-5 glass border-white/10 text-center no-underline inline-flex items-center justify-center"
+              >
+                Learn more →
+              </motion.a>
             </div>
-            <div className="mt-5 text-[12.5px] text-[var(--muted)] flex items-center justify-center gap-2">
+            <div className="mt-8 text-[12.5px] text-[var(--muted)] flex flex-wrap items-center justify-center gap-3 font-bold uppercase tracking-wider">
               <span>✓ Free forever</span>
-              <div className="w-1 h-1 rounded-full bg-[var(--muted)] opacity-30" />
+              <div className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] opacity-30" />
               <span>✓ No personal data sold</span>
-              <div className="w-1 h-1 rounded-full bg-[var(--muted)] opacity-30" />
+              <div className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] opacity-30" />
               <span>✓ Private & Secure</span>
             </div>
-          </div>
+          </motion.div>
         </div>
       </section>
 
-      <footer className="border-t border-[var(--border)] py-12 pb-8 relative z-10">
+      <footer className="border-t border-[var(--border)] py-16 pb-12 relative z-10 bg-[var(--bg)]">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="footer-inner">
-            <div>
-              <div className="font-serif text-2xl text-[var(--teal)] mb-3">Veda Health</div>
+          <div className="footer-inner grid grid-cols-1 md:grid-cols-4 gap-12 text-sm leading-relaxed mb-12">
+            <div className="md:col-span-1">
+              <div className="font-serif text-3xl text-[var(--teal)] mb-3 font-bold">Veda Health</div>
               <p className="text-[13.5px] text-[var(--muted)] leading-relaxed max-w-[280px]">AI-powered health companion for Indian families. Available in 10 languages, completely free.</p>
-              <p className="text-[11.5px] text-[var(--muted)] opacity-50 mt-4 leading-relaxed">⚠️ Veda is for educational purposes only and does not replace professional medical advice. Always consult a qualified doctor for medical decisions.</p>
+              <p className="text-[11px] text-[var(--muted)] opacity-55 mt-4 leading-relaxed">⚠️ Veda is for educational purposes only and does not replace professional medical advice. Always consult a qualified doctor for medical decisions.</p>
             </div>
             <div>
-              <h4 className="text-[12px] font-bold text-[var(--text2)] uppercase tracking-wider mb-4">Features</h4>
-              <ul className="footer-links">
-                <li><a href="#" onClick={handleStart}>AI Health Chat</a></li>
-                <li><a href="#" onClick={handleStart}>Symptom Checker</a></li>
-                <li><a href="#" onClick={handleStart}>Health Journal</a></li>
-                <li><a href="#" onClick={handleStart}>Medicine Delivery</a></li>
-                <li><a href="#" onClick={handleStart}>Hospital Finder</a></li>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">Features</h4>
+              <ul className="footer-links space-y-2.5 list-none pl-0">
+                {["AI Health Chat", "Symptom Checker", "Health Journal", "Medicine Delivery", "Hospital Finder"].map((item, index) => (
+                  <li key={index}>
+                    <button onClick={handleStart} className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors bg-transparent border-none p-0 cursor-pointer font-bold">{item}</button>
+                  </li>
+                ))}
               </ul>
             </div>
             <div>
-              <h4 className="text-[12px] font-bold text-[var(--text2)] uppercase tracking-wider mb-4">For Professionals</h4>
-              <ul className="footer-links">
-                <li><a href="#" onClick={handleStart}>Clinic Portal</a></li>
-                <li><a href="#" onClick={handleStart}>Corporate Dashboard</a></li>
-                <li><a href="#" onClick={handleStart}>Medical Education</a></li>
-                <li><a href="#" onClick={handleStart}>Family Manager</a></li>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">For Professionals</h4>
+              <ul className="footer-links space-y-2.5 list-none pl-0">
+                {["Clinic Portal", "Corporate Dashboard", "Medical Education", "Family Manager"].map((item, index) => (
+                  <li key={index}>
+                    <button onClick={handleStart} className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors bg-transparent border-none p-0 cursor-pointer font-bold">{item}</button>
+                  </li>
+                ))}
               </ul>
             </div>
             <div>
-              <h4 className="text-[12px] font-bold text-[var(--text2)] uppercase tracking-wider mb-4">Connect</h4>
-              <ul className="footer-links">
-                <li><a href="#">About</a></li>
-                <li><a href="#">Contact</a></li>
-                <li><a href="#">Privacy Policy</a></li>
-                <li><a href="#">Terms of Service</a></li>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">Connect</h4>
+              <ul className="footer-links space-y-2.5 list-none pl-0">
+                <li><a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">About</a></li>
+                <li><a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">Contact</a></li>
+                <li><a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">Privacy Policy</a></li>
+                <li><a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">Terms of Service</a></li>
               </ul>
             </div>
           </div>
-          <div className="border-t border-[var(--border)] pt-6 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-[13px] text-[var(--muted)] flex items-center gap-1.5">© 2025 Veda Health. Made with <Heart size={14} className="text-red-400 fill-red-400" /> in India.</span>
+          <div className="border-t border-[var(--border)] pt-8 flex flex-wrap items-center justify-between gap-4">
+            <span className="text-[13px] text-[var(--muted)] flex items-center gap-1.5 font-semibold">© 2025 Veda Health. Made with <Heart size={14} className="text-red-400 fill-red-400" /> in India.</span>
             <div className="flex gap-5">
-              <a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--text2)] no-underline transition-colors">Privacy</a>
-              <a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--text2)] no-underline transition-colors">Terms</a>
-              <a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--text2)] no-underline transition-colors">Disclaimer</a>
+              <a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--text2)] no-underline transition-colors font-bold">Privacy</a>
+              <a href="#" className="text-[13px] text(--muted)] hover:text-[var(--text2)] no-underline transition-colors font-bold">Terms</a>
+              <a href="#" className="text-[13px] text-[var(--muted)] hover:text-[var(--text2)] no-underline transition-colors font-bold">Disclaimer</a>
             </div>
           </div>
         </div>
