@@ -121,6 +121,7 @@ import { TrendsInsights } from './components/TrendsInsights';
 import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
 import { PageWrapper, StaggerContainer, StaggerItem } from './components/PageWrapper';
+import { SEOMetadata } from './components/SEOMetadata';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
@@ -2351,17 +2352,22 @@ function AppContent() {
 
   if (mode === 'landing') return (
     <>
+      <SEOMetadata mode={mode} />
       {renderAlarmOverlay()}
       {renderLanding()}
     </>
   );
 
   if (mode === 'auth') return (
-    <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} isLightMode={isLightMode} />
+    <>
+      <SEOMetadata mode={mode} />
+      <AuthView onLogin={handleLogin} onBack={() => setMode('landing')} isLightMode={isLightMode} />
+    </>
   );
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)] selection:bg-[var(--teal)] selection:text-[#020f0c] relative">
+      <SEOMetadata mode={mode} />
         {/* Billion Dollar Aurora Ambient Glows */}
         <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden opacity-30 dark:opacity-[0.25]">
           <div className="absolute top-[-10%] left-[-10%] w-[50vw] h-[50vw] rounded-full bg-gradient-to-br from-teal-400 to-emerald-400 opacity-20 blur-[130px]" />

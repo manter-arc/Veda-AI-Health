@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
@@ -16,6 +17,21 @@ async function startServer() {
   // API Routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // Explicitly serve sitemap.xml
+  app.get("/sitemap.xml", (req, res) => {
+    const sitemapPath = path.join(process.cwd(), "public", "sitemap.xml");
+    if (fs.existsSync(sitemapPath)) {
+      let xml = fs.readFileSync(sitemapPath, "utf8");
+      const secureHost = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      const actualDomain = `${secureHost}://${req.headers.host}`;
+      xml = xml.replaceAll("https://veda-health.vercel.app", actualDomain);
+      res.header("Content-Type", "application/xml");
+      res.send(xml);
+    } else {
+      res.status(404).send("Sitemap not found");
+    }
   });
 
   // Vite middleware for development
