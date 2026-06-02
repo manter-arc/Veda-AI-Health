@@ -122,6 +122,8 @@ import { SOSView } from './components/SOSView';
 import { PullToRefresh } from './components/PullToRefresh';
 import { PageWrapper, StaggerContainer, StaggerItem } from './components/PageWrapper';
 import { SEOMetadata } from './components/SEOMetadata';
+import { BlogView } from './components/BlogView';
+import { SymptomDetailView } from './components/SymptomDetailView';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
@@ -296,6 +298,8 @@ export default function App() {
 function AppContent() {
   const { t, i18n } = useTranslation();
   const [mode, setMode] = useState<AppMode>('landing');
+  const [symptomSlug, setSymptomSlug] = useState<string>('');
+  const [articleSlug, setArticleSlug] = useState<string>('');
   const [activeFeature, setActiveFeature] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLightMode, setIsLightMode] = useLocalStorage('veda_theme', true);
@@ -444,6 +448,63 @@ function AppContent() {
         console.debug('Service Worker registration failed:', err);
       });
     }
+  }, []);
+
+  // Synchronize state with URL path for rich routing & SEO deep indexing
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const path = window.location.pathname;
+      if (path === '/' || path === '') {
+        setMode('landing');
+      } else if (path === '/blog' || path === '/blog/') {
+        setMode('blog');
+        setArticleSlug('');
+      } else if (path.startsWith('/blog/')) {
+        const slug = path.replace('/blog/', '').replace(/\/$/, '');
+        setMode('blog_article');
+        setArticleSlug(slug);
+      } else if (path.startsWith('/symptoms/')) {
+        const slug = path.replace('/symptoms/', '').replace(/\/$/, '');
+        setMode('symptom_detail');
+        setSymptomSlug(slug);
+      } else {
+        // Map other paths to app modes if they exist in types
+        const potentialMode = path.slice(1) as AppMode;
+        const validModes: AppMode[] = ['landing', 'home', 'chat', 'symptoms', 'medication', 'lab', 'triage', 'rx', 'journal', 'score', 'patterns', 'advice', 'skin', 'food', 'mind', 'roadmap', 'opinion', 'doctor', 'hospital', 'records', 'family', 'alerts', 'medicine', 'insurance', 'reminders', 'clinic', 'corporate', 'edu', 'vitals', 'scanner', 'teleconsult', 'calendar', 'bmi', 'wearable', 'onboarding', 'auth', 'privacy', 'trust', 'wellness', 'sos', 'membership', 'locker', 'profile'];
+        if (validModes.includes(potentialMode)) {
+          setMode(potentialMode);
+        } else {
+          setMode('landing');
+        }
+      }
+    };
+
+    handleLocationChange();
+
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, [user]);
+
+  // Intercept all anchor clicks for single-page routing without page-reload
+  useEffect(() => {
+    const handleAnchorClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const anchor = target.closest('a');
+      if (anchor && anchor.origin === window.location.origin) {
+        // Skip default hash links used on homepage sections (e.g. #features, #testimonials)
+        if (anchor.hash && anchor.pathname === window.location.pathname) {
+          return;
+        }
+        const path = anchor.pathname;
+        if (path === '/blog' || path.startsWith('/blog/') || path.startsWith('/symptoms/') || path === '/' || path === '/auth') {
+          e.preventDefault();
+          window.history.pushState(null, '', path);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+      }
+    };
+    window.addEventListener('click', handleAnchorClick);
+    return () => window.removeEventListener('click', handleAnchorClick);
   }, []);
 
   const requestNotificationPermission = async () => {
@@ -724,6 +785,16 @@ function AppContent() {
     if (tab) setVitalsTab(tab);
     closeSidebar();
     window.scrollTo(0, 0);
+
+    // Synchronize browser history / URL path
+    let targetPath = '/';
+    if (newMode === 'landing') targetPath = '/';
+    else if (newMode === 'blog') targetPath = '/blog';
+    else targetPath = `/${newMode}`;
+
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ mode: newMode, tab }, '', targetPath);
+    }
   };
 
   const handleStartChat = () => {
@@ -736,6 +807,17 @@ function AppContent() {
       }
     } else {
       switchMode('chat');
+    }
+  };
+
+  const handleNavigateHome = () => {
+    if (user) {
+      switchMode('home');
+    } else {
+      setMode('landing');
+      if (window.location.pathname !== '/') {
+        window.history.pushState(null, '', '/');
+      }
     }
   };
 
@@ -1811,14 +1893,14 @@ function AppContent() {
 
       <footer className="border-t border-[var(--border)] py-16 pb-12 relative z-10 bg-[var(--bg)]">
         <div className="max-w-[1100px] mx-auto px-6">
-          <div className="footer-inner grid grid-cols-1 md:grid-cols-4 gap-12 text-sm leading-relaxed mb-12">
-            <div className="md:col-span-1">
+          <div className="footer-inner grid grid-cols-2 lg:grid-cols-5 gap-12 text-sm leading-relaxed mb-12">
+            <div className="col-span-2 lg:col-span-1">
               <div className="font-serif text-3xl text-[var(--teal)] mb-3 font-bold">Veda Health</div>
               <p className="text-[13.5px] text-[var(--muted)] leading-relaxed max-w-[280px]">AI-powered health companion for Indian families. Available in 10 languages, completely free.</p>
               <p className="text-[11px] text-[var(--muted)] opacity-55 mt-4 leading-relaxed">⚠️ Veda is for educational purposes only and does not replace professional medical advice. Always consult a qualified doctor for medical decisions.</p>
             </div>
             <div>
-              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">Features</h4>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">AI Tools</h4>
               <ul className="footer-links space-y-2.5 list-none pl-0">
                 {["AI Health Chat", "Symptom Checker", "Health Journal", "Medicine Delivery", "Hospital Finder"].map((item, index) => (
                   <li key={index}>
@@ -1828,11 +1910,31 @@ function AppContent() {
               </ul>
             </div>
             <div>
-              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">For Professionals</h4>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">Symptom Guides</h4>
               <ul className="footer-links space-y-2.5 list-none pl-0">
-                {["Clinic Portal", "Corporate Dashboard", "Medical Education", "Family Manager"].map((item, index) => (
+                {[
+                  { name: "Headache Guide", href: "/symptoms/headache" },
+                  { name: "Fever Guide", href: "/symptoms/fever" },
+                  { name: "Stomach Pain Guide", href: "/symptoms/stomach-pain" },
+                  { name: "Fatigue Guide", href: "/symptoms/fatigue" }
+                ].map((item, index) => (
                   <li key={index}>
-                    <button onClick={handleStart} className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors bg-transparent border-none p-0 cursor-pointer font-bold">{item}</button>
+                    <a href={item.href} className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">{item.name}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="text-[11px] font-black text-[var(--text2)] uppercase tracking-[0.2em] mb-4">Wellness Library</h4>
+              <ul className="footer-links space-y-2.5 list-none pl-0">
+                {[
+                  { name: "Veda Knowledge Hub", href: "/blog" },
+                  { name: "Headache Causes", href: "/blog/headache-causes" },
+                  { name: "Dehydration Signs", href: "/blog/dehydration-signs" },
+                  { name: "Googling Symptoms", href: "/blog/why-googling-symptoms-causes-anxiety" }
+                ].map((item, index) => (
+                  <li key={index}>
+                    <a href={item.href} className="text-[13px] text-[var(--muted)] hover:text-[var(--teal)] no-underline transition-colors font-bold">{item.name}</a>
                   </li>
                 ))}
               </ul>
@@ -1923,6 +2025,7 @@ function AppContent() {
                 <SidebarItem icon={<Utensils size={18} />} label="Nutrition Planner" active={mode === 'food'} onClick={() => switchMode('food')} />
                 <SidebarItem icon={<ClipboardList size={18} />} label="Prescription Lens" active={mode === 'rx'} onClick={() => switchMode('rx')} />
                 <SidebarItem icon={<Lock size={18} />} label="Health Locker" active={mode === 'locker'} onClick={() => switchMode('locker')} />
+                <SidebarItem icon={<BookOpen size={18} />} label="Wellness Blog" active={mode === 'blog' || mode === 'blog_article'} onClick={() => switchMode('blog')} />
                 <button 
                   onClick={createNewChat}
                   className="w-full flex items-center gap-3.5 px-4 py-3.5 mt-2 rounded-2xl transition-all text-sm font-bold border-2 border-dashed border-[var(--teal)]/20 text-[var(--teal)] hover:bg-[var(--teal)]/5 hover:border-[var(--teal)]/40 group active:scale-95"
@@ -2444,6 +2547,26 @@ function AppContent() {
                 {mode === 'journal' && <JournalView journal={journal} addJournalEntry={addJournalEntry} />}
                 {mode === 'wellness' && <WellnessCoach profile={profile} />}
                 {mode === 'symptoms' && <SymptomChecker profile={profile} switchMode={switchMode} />}
+                {mode === 'blog' && (
+                  <BlogView 
+                    onNavigateHome={handleNavigateHome} 
+                    onSwitchMode={switchMode} 
+                  />
+                )}
+                {mode === 'blog_article' && (
+                  <BlogView 
+                    articleSlug={articleSlug} 
+                    onNavigateHome={handleNavigateHome} 
+                    onSwitchMode={switchMode} 
+                  />
+                )}
+                {mode === 'symptom_detail' && (
+                  <SymptomDetailView 
+                    symptomSlug={symptomSlug} 
+                    onNavigateHome={handleNavigateHome} 
+                    onSwitchMode={switchMode} 
+                  />
+                )}
                 {mode === 'medication' && <MedicationInfo profile={profile} />}
                 {mode === 'lab' && <LabScanner />}
                 {mode === 'triage' && <TriageView profile={profile} />}
