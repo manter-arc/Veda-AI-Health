@@ -18,7 +18,7 @@ if (!siteUrl) {
     siteUrl = `https://${vercelUrl}`;
   } else {
     // Default fallback url if not specified
-    siteUrl = 'https://veda-health.vercel.app';
+    siteUrl = 'https://drveda.vercel.app';
   }
 }
 
@@ -39,7 +39,7 @@ function processFile(filePath) {
   let content = fs.readFileSync(filePath, 'utf8');
   
   // Replace fallback domains with resolved siteUrl
-  const originalFallback = 'https://veda-health.vercel.app';
+  const originalFallback = 'https://drveda.vercel.app';
   const updatedContent = content.replaceAll(originalFallback, siteUrl);
   
   fs.writeFileSync(filePath, updatedContent, 'utf8');

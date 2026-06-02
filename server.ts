@@ -26,11 +26,22 @@ async function startServer() {
       let xml = fs.readFileSync(sitemapPath, "utf8");
       const secureHost = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
       const actualDomain = `${secureHost}://${req.headers.host}`;
-      xml = xml.replaceAll("https://veda-health.vercel.app", actualDomain);
+      xml = xml.replaceAll("https://drveda.vercel.app", actualDomain);
       res.header("Content-Type", "application/xml");
       res.send(xml);
     } else {
       res.status(404).send("Sitemap not found");
+    }
+  });
+
+  // Explicitly serve robots.txt
+  app.get("/robots.txt", (req, res) => {
+    const robotsPath = path.join(process.cwd(), "public", "robots.txt");
+    if (fs.existsSync(robotsPath)) {
+      res.header("Content-Type", "text/plain");
+      res.sendFile(robotsPath);
+    } else {
+      res.status(404).send("robots.txt not found");
     }
   });
 

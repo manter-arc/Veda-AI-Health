@@ -10,7 +10,7 @@ export function SEOMetadata({ mode }: SEOMetadataProps) {
   // Determine site URL dynamically in browser, with fallback
   const siteUrl = typeof window !== 'undefined' && window.location.origin 
     ? window.location.origin 
-    : 'https://veda-health.vercel.app';
+    : 'https://drveda.vercel.app';
 
   // Specific canonical URL based on the current SPA tab/view
   const canonicalUrl = mode && mode !== 'landing' 
