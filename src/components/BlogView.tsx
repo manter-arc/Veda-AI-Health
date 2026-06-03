@@ -109,6 +109,16 @@ function ArticleDetail({ article, onSwitchMode }: { article: BlogArticle; onSwit
                 ))}
               </div>
             ))}
+            {/* Medical Disclaimer Banner */}
+            <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-2xl flex items-start gap-3.5 mt-8 hover:border-amber-500/30 transition-all">
+              <AlertCircle className="text-amber-500 shrink-0 mt-0.5" size={18} />
+              <div className="space-y-1">
+                <h4 className="text-xs font-black uppercase tracking-widest text-amber-400">Clinical & Medical Disclaimer</h4>
+                <p className="text-[12px] text-[var(--text2)] leading-relaxed select-text">
+                  This health article is provided for educational and informational purposes only. It is not intended as a substitute for professional medical advice, clinical diagnosis, or complete treatment pathways. Always seek the advice of your primary care physician or other qualified healthcare provider with any medical symptom questions, and never disregard professional guidance because of something you read here. Veda AI is a preliminary symptom analysis tool designed to aid patient prep, not to make diagnostic conclusions.
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* Collapsible FAQ Section */}

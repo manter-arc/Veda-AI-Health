@@ -301,6 +301,7 @@ function AppContent() {
   const [symptomSlug, setSymptomSlug] = useState<string>('');
   const [articleSlug, setArticleSlug] = useState<string>('');
   const [activeFeature, setActiveFeature] = useState(0);
+  const [faqOpenIndex, setFaqOpenIndex] = useState<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLightMode, setIsLightMode] = useLocalStorage('veda_theme', true);
   
@@ -484,6 +485,28 @@ function AppContent() {
     window.addEventListener('popstate', handleLocationChange);
     return () => window.removeEventListener('popstate', handleLocationChange);
   }, [user]);
+
+  // Google Analytics 4 (GA4) SPA routing & pageview tracking
+  useEffect(() => {
+    const trackPageView = () => {
+      if (typeof window !== 'undefined' && 'gtag' in window) {
+        try {
+          (window as any).gtag('event', 'page_view', {
+            page_path: window.location.pathname,
+            page_title: document.title,
+            page_location: window.location.href,
+          });
+          console.debug('[GA4] Tracked pageview event:', window.location.pathname, '-', document.title);
+        } catch (err) {
+          console.error('[GA4] Error firing pageview:', err);
+        }
+      }
+    };
+
+    // Defer slightly to let components like react-helmet-async finalize document.title
+    const timer = setTimeout(trackPageView, 150);
+    return () => clearTimeout(timer);
+  }, [mode, articleSlug, symptomSlug]);
 
   // Intercept all anchor clicks for single-page routing without page-reload
   useEffect(() => {
@@ -1155,7 +1178,7 @@ function AppContent() {
               }}
               className="font-serif text-[clamp(42px,6vw,64px)] leading-[1.05] tracking-tight text-[var(--text)] mb-6"
             >
-              Your Your <em className="italic text-[var(--teal)] not-italic">AI doctor</em><br />always available.
+              Your personal <em className="italic text-[var(--teal)] not-italic">health AI assistant</em><br />always available.
             </motion.h1>
             
             <motion.p 
@@ -1165,7 +1188,7 @@ function AppContent() {
               }}
               className="text-lg text-[var(--text2)] leading-relaxed max-w-[480px] mb-10 font-medium opacity-80"
             >
-              Veda gives you instant health guidance, tracks your vitals, and manages your medical life — all in one simple, private app.
+              Veda is a free AI health app and professional AI symptom checker that analyzes physical symptoms, deciphers complex blood diagnostics, and tracks personal vital trends securely.
             </motion.p>
             
             <motion.div 
@@ -1312,7 +1335,7 @@ function AppContent() {
           <div className="text-center mb-16">
             <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] mb-4 block">Everything you need</span>
             <h2 className="font-serif text-[clamp(30px,4vw,44px)] leading-[1.15] tracking-tight mb-4 text-[var(--text)]">One app for your <em>entire</em> health journey</h2>
-            <p className="text-[var(--text2)] max-w-[540px] mx-auto text-base">From daily symptoms to emergency guidance — Veda covers it all, powered by Google Gemini AI.</p>
+            <p className="text-[var(--text2)] max-w-[540px] mx-auto text-base">From detailed symptom checking to localized hospital routing — Veda is a smart AI health app powered by Google Gemini.</p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch pt-4">
@@ -1320,9 +1343,9 @@ function AppContent() {
             <div className="lg:col-span-5 flex flex-col gap-4">
               {[
                 {
-                  title: "AI Consultation",
-                  subtitle: "Instant clinical guidance in plain language",
-                  description: "Describe physical symptoms naturally. Veda leverages advanced medical models to evaluate your query, considering your full chronological health history and active medications.",
+                  title: "AI Symptom Checker",
+                  subtitle: "Advanced symptom checker AI for instant guidance",
+                  description: "Describe physical symptoms naturally. Our expert symptom analysis tool evaluates your concerns and references clinical pathways, acting as a personal health AI assistant.",
                   icon: Stethoscope,
                   badge: "Gemini 2.0 Flash"
                 },
@@ -1832,7 +1855,7 @@ function AppContent() {
                 className="testimonial-card bg-[var(--card)] border border-[var(--border)] rounded-3xl p-6 shadow-md cursor-default flex flex-col justify-between"
               >
                 <div>
-                  <div className="t-stars text-amber-400 mb-4">★★★★★</div>
+                   <div className="t-stars text-amber-400 mb-4">★★★★★</div>
                   <p className="text-[14.5px] text-[var(--text2)] leading-relaxed mb-6 font-semibold italic">"{test.text}"</p>
                 </div>
                 <div className="t-author flex items-center gap-3.5 border-t border-[var(--border)] pt-4">
@@ -1846,6 +1869,75 @@ function AppContent() {
                 </div>
               </motion.div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="py-24 bg-[var(--surface)] border-y border-[var(--border)]" id="faq">
+        <div className="max-w-[800px] mx-auto px-6">
+          <div className="text-center mb-16">
+            <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] mb-4 block animate-pulse">SEO & Medical Knowledge Hub</span>
+            <h2 className="font-serif text-[clamp(28px,4vw,40px)] leading-[1.15] tracking-tight mb-4 text-[var(--text)]">Frequently Asked Questions</h2>
+            <p className="text-[var(--text2)] max-w-[500px] mx-auto text-sm font-semibold opacity-80">Got questions about our AI health app or symptom checker AI? Find expert answers below.</p>
+          </div>
+
+          <div className="space-y-4">
+            {[
+              {
+                q: "What is Veda Health and how does this health AI assistant help me?",
+                a: "Veda Health is a secure, comprehensive AI health app designed to empower families. It works as an intelligent, round-the-clock health AI assistant, guiding you through physical symptom verification, translation of scribbled doctor notes, analyzing clinical test reports, and tracking daily vitals in one beautifully integrated dashboard."
+              },
+              {
+                q: "Is an AI symptom checker as safe as a traditional internet search?",
+                a: "Absolutely. Standard search engines rank documents by advertising bid rates or simple clicks, which frequently surfaces worst-case conditions and causes unnecessary anxiety. Veda's advanced AI symptom checker uses context-aware diagnostic algorithms. Instead of matching text fields statically, it functions as an empathetic symptom analysis tool, analyzing your specific profile and timelines to deliver balanced, evidence-based triage steps."
+              },
+              {
+                q: "Can I use the symptom checker AI for multiple family members?",
+                a: "Yes! Veda was constructed precisely for multi-user family healthcare. Within the portal, you can build personalized health profiles for kids, partners, or parents. When you run a query, our symptom checker AI cross-references that specific member's active medication list, known pre-existing allergies, and vaccination background to yield highly relevant guidance."
+              },
+              {
+                q: "Is the symptom analysis tool clinical or should I consult a doctor?",
+                a: "No clinical AI symptom checker or symptom analysis tool can replace a human physician. Veda does not make formal diagnostics or prescribe medications. Rather, it demystifies complex bodily reactions and structured medical documents, helping you organize an informative health log to present directly to your doctor."
+              },
+              {
+                q: "How does the prescription scanner protect data safety?",
+                a: "Safety and security are embedded into everything we build. All documents analyzed by our AI health app—whether an uploaded lab report or handwritten prescription image—are processed with standard security protections. Your custom profile history is stored transparently and never shared or sold to external agencies."
+              }
+            ].map((item, index) => {
+              const isOpen = faqOpenIndex === index;
+              return (
+                <div 
+                  key={index} 
+                  className="bg-[var(--card)] border border-[var(--border)] rounded-2xl overflow-hidden transition-all duration-300 hover:border-[var(--teal)]/40"
+                >
+                  <button
+                    onClick={() => setFaqOpenIndex(isOpen ? null : index)}
+                    className="w-full text-left p-6 flex items-center justify-between gap-4 font-serif text-lg font-bold text-[var(--text)] bg-transparent border-none cursor-pointer focus:outline-none"
+                    aria-expanded={isOpen}
+                  >
+                    <span>{item.q}</span>
+                    <span className={`text-[var(--teal)] shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}>
+                      <ChevronDown size={20} />
+                    </span>
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {isOpen && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.25, ease: "easeInOut" }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-6 pt-0 border-t border-[var(--border)]/50 text-[14.5px] text-[var(--text2)] leading-relaxed font-semibold opacity-90 select-text">
+                          {item.a}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>

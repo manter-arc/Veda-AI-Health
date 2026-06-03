@@ -28,36 +28,52 @@ export interface BlogArticle {
 export const BLOG_ARTICLES: Record<string, BlogArticle> = {
   'headache-causes': {
     slug: 'headache-causes',
-    title: 'Understanding Headache Causes: When Tension Highlights Hidden Triggers',
-    metaTitle: 'Headache Causes & Triggers: When to Seek Medical Help | Veda AI',
-    metaDescription: 'Discover the most common headache causes including tension, climate change, and lifestyle triggers. Learn when a headache might require instant medical care.',
+    title: '7 Common Causes of Headaches',
+    metaTitle: '7 Common Causes of Headaches & Triggers | Veda AI',
+    metaDescription: 'Discover the 7 most common headache causes, from tension and dehydration to metabolic changes. Learn when to seek instant medical evaluation.',
     category: 'Symptom Guide',
     date: 'June 02, 2026',
     readTime: '6 min read',
     author: 'Dr. Anita Roy, Chief Medical Advisor',
-    summary: 'Headaches are among the most common ailments worldwide, yet pinpointing the exact cause can be challenging. Learn about primary vs. secondary triggers and how to identify yours.',
+    summary: 'Headaches are among the most persistent ailments worldwide, yet pinpointing the exact cause can be challenging. Read about the 7 most common triggers and learn how to identify yours.',
     image: 'https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?auto=format&fit=crop&w=800&q=80',
     keywords: ['headache causes', 'AI symptom checker', 'symptom checker AI', 'health AI assistant', 'symptom analysis tool'],
     content: [
       {
-        sectionTitle: 'What Causes a Headache?',
-        text: 'Almost everyone experiences headaches occasionally. While most headaches are harmless, identifying the root cause can help you discover structural relief. Primary headaches are standalone conditions directly caused by overactivity or dysfunction of pain-sensitive structures in your head. Examples include tension headaches, migraines, and cluster headaches. Utilizing an expert symptom analysis tool can help you structure your medical history before consulting a physician.'
+        sectionTitle: 'What Really Triggers a Headache?',
+        text: 'Almost everyone experiences headaches occasionally. While most headaches are harmless, identifying the root cause can help you discover structural relief. Primary headaches are standalone conditions directly caused by overactivity or dysfunction of pain-sensitive structures in your head. Utilizing an expert symptom analysis tool can help you structure your medical history before consulting a physician.'
       },
       {
-        sectionTitle: 'Common Primary Headache Triggers',
-        text: 'Primary headaches can be activated by several everyday lifestyle elements, environment changes, or food choices:',
+        sectionTitle: '7 Common Causes of Headaches Explained',
+        text: 'Primary headaches can be activated by several everyday lifestyle elements, environment changes, or food choices. Here are the seven most common culprits:',
         subsections: [
           {
-            title: 'Dehydration and Fluid Deficit',
+            title: '1. Dehydration and Fluid Deficit',
             text: 'A mild drop in hydration levels causes blood vessels in the brain to constrict temporarily, triggering a dehydration headache. This is often accompanied by dark urine, dry mouth, or dry skin.'
           },
           {
-            title: 'Muscle Tension and Electronic Eye Strain',
-            text: 'Spending hours in front of terminal or laptop monitors strains ocular muscles and compromises neck posture. This tension radiates upwards, forming a classic band-like tension headache.'
+            title: '2. Muscle Tension and Electronic Eye Strain',
+            text: 'Spending hours in front of screens strains ocular muscles and compromises neck posture. This tension radiates upwards, forming a classic band-like tension headache.'
           },
           {
-            title: 'Dietary Intolerances and Caffeine Fluctuations',
+            title: '3. Lack of Sleep and Altered Circadian Rhythms',
+            text: 'Sleep deprivation or irregular sleeping hours disrupts your body’s natural restorative cycle. This lack of rest decreases the pain threshold and increases headache sensitivity.'
+          },
+          {
+            title: '4. Chronic Stress and Emotional Fatigue',
+            text: 'Severe anxiety and stress release cortisol and adrenaline, which tense muscles in the neck and scalp, leading to tension headaches or triggering intense migraines.'
+          },
+          {
+            title: '5. Dietary Intolerances and Caffeine Fluctuations',
             text: 'Aged cheeses, processed meats containing nitrates, artificial sweeteners, and sudden withdrawal from caffeine can trigger acute migraine attacks in susceptible individuals.'
+          },
+          {
+            title: '6. Sinus Congestion and Seasonal Allergies',
+            text: 'Allergic reactions and sinus blockages cause inflammation in the nasal passages, producing a deep, constant pressure across your forehead, cheeks, and eyes.'
+          },
+          {
+            title: '7. Weather Changes and Barometric Pressure Fluctuations',
+            text: 'Sudden shifts in climate, humidity, or barometric atmospheric pressure are well-known triggers that can disturb neurotransmitter balance and activate throbbing migraines.'
           }
         ]
       },
@@ -90,9 +106,9 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
 
   'dehydration-signs': {
     slug: 'dehydration-signs',
-    title: '5 Subtle Dehydration Signs You Are Probably Ignoring',
-    metaTitle: '5 Dehydration Signs & Symptoms: Hidden Risks | Veda AI',
-    metaDescription: 'Explore the 5 subtle dehydration signs your body is sending you. Find out how fluid balance affects energy levels, focusing, and joint health.',
+    title: 'Signs You May Be Dehydrated',
+    metaTitle: 'Signs You May Be Dehydrated: Subtle Clues & Risks | Veda AI',
+    metaDescription: 'Explore the subtle signs you may be dehydrated. Find out how fluid balance affects energy levels, memory focus, bad breath, and skin elasticity.',
     category: 'Daily Wellness',
     date: 'May 28, 2026',
     readTime: '5 min read',
@@ -106,7 +122,7 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
         text: 'Our biological systems consist of nearly 60% fluid. Water regulates body temperature, lubricates joints, aids digestion, and transports critical structural nutrients. Mild dehydration—just a 1.5% loss in normal water volume—can degrade physical performance, weaken alertness, and trigger acute headaches. Keeping a close eye on these signals with a health AI assistant is an excellent way to maintain long-term metabolic health.'
       },
       {
-        sectionTitle: 'The 5 Subtle Indicators You Need Water',
+        sectionTitle: 'Subtle Indicators that You May Be Dehydrated',
         text: 'While thirst is the most obvious sign of needing water, your body has several other ways of signaling dehydration:',
         subsections: [
           {
@@ -132,7 +148,7 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
         ]
       },
       {
-        sectionTitle: 'How to Build a Sustainable Hydration habit',
+        sectionTitle: 'How to Build a Sustainable Hydration Habit',
         text: 'Aim for structured hydration rather than drinking massive quantities at once. Keep a reusable steel flask visible on your work desk. Try adding natural visual cues, like cucumber or lemon slices, and drink a glass of pure, filtered water directly upon waking up.'
       }
     ],
@@ -152,8 +168,8 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
 
   'why-googling-symptoms-causes-anxiety': {
     slug: 'why-googling-symptoms-causes-anxiety',
-    title: 'Why Googling Medical Symptoms Causes Cyberchondria (And How AI Helps)',
-    metaTitle: 'The Danger of Googling Symptoms & Cyberchondria | Veda AI',
+    title: 'Why Googling Symptoms Increases Anxiety',
+    metaTitle: 'Why Googling Symptoms Increases Anxiety: Cyberchondria | Veda AI',
     metaDescription: 'Why does searching medical issues online always lead to extreme health anxiety? Learn how a modern AI symptom checker provides balanced guidance.',
     category: 'Digital Mental Health',
     date: 'May 15, 2026',
@@ -173,7 +189,7 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
       },
       {
         sectionTitle: 'The AI Symptom Checker: A Personalized, Scientific Path Forward',
-        text: 'In contrast to search engines, a modern symptom checker AI parses clinical relationships holistically. By querying the patient on localized factors, age, timelines, and pre-existing medical diagnoses, a high-fidelity AI health app can cross-reference an vast catalog of medical cases immediately.',
+        text: 'In contrast to search engines, a modern symptom checker AI parses clinical relationships holistically. By querying the patient on localized factors, age, timelines, and pre-existing medical diagnoses, a high-fidelity AI health app can cross-reference high-validity catalogs of medical cases immediately.',
         subsections: [
           {
             title: 'Dynamic Questioning and Clinical Logic',
@@ -197,7 +213,7 @@ export const BLOG_ARTICLES: Record<string, BlogArticle> = {
       },
       {
         question: 'Can I trust an AI health assistant completely?',
-        answer: 'An AI assistant is an educational tool designed to clarify pathways and organize pre-consult reports. It does not replace physical examination or professional primary care doctors.'
+        answer: 'An AI assistant is an educational tool designed to clarify pathways and organize pre-consult reports. It does not replace physical examination or professional care.'
       }
     ],
     relatedArticlesSlugs: ['headache-causes', 'dehydration-signs'],

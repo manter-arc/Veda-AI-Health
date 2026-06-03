@@ -55,8 +55,8 @@ export function SEOMetadata({ mode }: SEOMetadataProps) {
   else {
     switch (mode) {
       case 'landing':
-        title = 'Veda AI – AI Symptom Checker & Health Assistant';
-        description = 'Check symptoms with AI in seconds. Get possible causes, health guidance, and next steps with Veda AI.';
+        title = 'Veda AI – AI Symptom Checker & Health AI Assistant';
+        description = 'Veda is a free AI health app & professional symptom analysis tool. Check symptoms with our expert symptom checker AI & health AI assistant instantly.';
         break;
       case 'chat':
         title = 'AI Health Chat – Veda AI';
