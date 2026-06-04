@@ -211,6 +211,7 @@ export type AppMode =
   | 'blog'
   | 'blog_article'
   | 'symptom_detail'
+  | 'clinical_report'
   | 'medication'
   | 'lab'
   | 'triage'
@@ -249,6 +250,7 @@ export type AppMode =
   | 'sos'
   | 'membership'
   | 'locker'
+  | 'gmail'
   | 'profile';
 
 export interface AppNotification {

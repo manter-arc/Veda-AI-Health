@@ -3,14 +3,16 @@ import { motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, ShieldAlert, FileText, HelpCircle, Activity, Sparkles, BookOpen } from 'lucide-react';
 import { SYMPTOM_PAGES, SymptomDetail } from '../data/symptomData';
 import { BLOG_ARTICLES } from '../data/blogData';
+import { InteractiveLeadTriageWidget } from './InteractiveLeadTriageWidget';
 
 interface SymptomDetailViewProps {
   symptomSlug: string;
   onNavigateHome: () => void;
   onSwitchMode: (mode: any) => void;
+  onStartChatWithPreload: (text: string) => void;
 }
 
-export function SymptomDetailView({ symptomSlug, onNavigateHome, onSwitchMode }: SymptomDetailViewProps) {
+export function SymptomDetailView({ symptomSlug, onNavigateHome, onSwitchMode, onStartChatWithPreload }: SymptomDetailViewProps) {
   const currentSymptom = SYMPTOM_PAGES[symptomSlug];
 
   // Fallback if not found
@@ -161,21 +163,15 @@ export function SymptomDetailView({ symptomSlug, onNavigateHome, onSwitchMode }:
         {/* Sidebar Navigation */}
         <div className="space-y-6">
           
-          {/* AI Symptom Tracker CTA Panel */}
-          <div className="bg-gradient-to-br from-teal-500/10 to-indigo-500/10 border border-[var(--teal)]/20 p-6 rounded-3xl space-y-4 relative overflow-hidden">
-            <div className="absolute -right-8 -top-8 w-24 h-24 bg-[var(--teal)]/10 rounded-full blur-xl pointer-events-none" />
-            <Sparkles className="text-[var(--teal)]" size={24} />
-            <h3 className="text-sm font-black uppercase tracking-widest text-white">Interactive Diagnosis</h3>
-            <p className="text-xs text-[var(--text2)] leading-relaxed">
-              Wondering about the exact cause behind your specific case? Avoid stressful web searches. Access Veda's secure clinical AI checker now.
-            </p>
-            <button 
-              onClick={() => onSwitchMode('symptoms')}
-              className="w-full py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-md shadow-blue-500/10 active:scale-95"
-            >
-              Start Symptom Analysis
-            </button>
-          </div>
+          {/* Interactive Lead Triage Widget */}
+          <InteractiveLeadTriageWidget 
+            onStartChat={onStartChatWithPreload}
+            defaultRegion={
+              symptomSlug === 'headache' ? 'Head & Neck' :
+              symptomSlug === 'stomach-pain' ? 'Abdominal / Stomach area' :
+              symptomSlug === 'fever' || symptomSlug === 'fatigue' ? 'Systemic (General Body)' : ''
+            }
+          />
 
           {/* Related Articles Widgets */}
           {relatedBlogs.length > 0 && (

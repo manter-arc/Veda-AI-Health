@@ -1039,4 +1039,50 @@ body.dark-mode .skeleton-line {
   scrollbar-width: none !important;  /* Firefox */
 }
 
+/* Custom CSS Print Rules for medical quality reports */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  
+  /* Hide all external layouts/headers/sidebars */
+  #main-content {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  
+  aside, 
+  nav, 
+  header, 
+  footer, 
+  .no-print, 
+  [role="banner"],
+  #bottom-bar,
+  #veda-sidebar,
+  [aria-label="chat"],
+  button:not(.print-include) {
+    display: none !important;
+  }
+
+  /* Make print area span entire size, remove digital details */
+  #clinical-print-area {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    background: white !important;
+    color: #0f172a !important;
+  }
+  
+  /* Ensure full background prints consistently */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
+
 

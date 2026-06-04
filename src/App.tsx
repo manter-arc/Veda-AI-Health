@@ -45,6 +45,7 @@ import {
   Droplets,
   Edit3,
   FileText, 
+  FileCheck,
   FileUp,
   Flame,
   FlaskConical,
@@ -124,6 +125,10 @@ import { PageWrapper, StaggerContainer, StaggerItem } from './components/PageWra
 import { SEOMetadata } from './components/SEOMetadata';
 import { BlogView } from './components/BlogView';
 import { SymptomDetailView } from './components/SymptomDetailView';
+import { InteractiveLeadTriageWidget } from './components/InteractiveLeadTriageWidget';
+import { ClinicalReportBuilder } from './components/ClinicalReportBuilder';
+import { PatientDirectoryFooter } from './components/PatientDirectoryFooter';
+import { GmailWorkspace } from './components/GmailWorkspace';
 import { AppMode, UserProfile, JournalEntry, Reminder, MedicalRecord, FamilyMember, InsurancePlan, UserInsurancePolicy, Appointment, Clinic, CorporateChallenge, ChatMessage, ChatConversation, HealthDocument, AppNotification } from './types';
 import { callGemini, analyzeImage, analyzeLabReport, analyzeFood, analyzeJournal, generateHealthRoadmap, generateCallSummary, analyzeSymptoms, generateSmartMedicationSchedule, analyzePrescription, getWellnessResponse, getChatResponse, analyzeLockerDocument, generateAppointmentBriefing, generatePostVisitChecklist, SYS_PROMPT } from './lib/gemini';
 import { auth, db, googleProvider, appleProvider } from './firebase';
@@ -176,6 +181,10 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errorMessage = error instanceof Error ? error.message : String(error);
   const isOffline = errorMessage.toLowerCase().includes('offline') || errorMessage.toLowerCase().includes('unavailable');
   
+  if (isOffline && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('database-status', { detail: { offline: true } }));
+  }
+
   const errInfo: FirestoreErrorInfo = {
     error: isOffline ? `${errorMessage}. This often indicates a network restriction in sandboxed environments. We've enabled Force Long Polling to help.` : errorMessage,
     authInfo: {
@@ -194,12 +203,19 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
   
-  // Only throw if it's a critical write error or if we really want to block the UI.
-  // For GET errors, we might want to just log and show a toast.
+  if (isOffline) {
+    console.warn('Firestore (Offline Cache Mode active): ', JSON.stringify(errInfo));
+  } else {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  }
+  
   if (operationType === OperationType.WRITE || operationType === OperationType.CREATE) {
-    throw new Error(JSON.stringify(errInfo));
+    console.warn("Firestore Write/Create error. Falling back to offline memory mode.", errInfo);
+    showErrorToast(isOffline 
+      ? "Action saved locally! Your browser or sandbox is currently blocking Cloud Sync." 
+      : "Database action saved in local cache. Cloud Sync is delayed."
+    );
   } else {
     console.warn("Non-critical Firestore GET/LIST error ignored for UI stability.", errInfo);
     if (isOffline) {
@@ -304,9 +320,23 @@ function AppContent() {
   const [faqOpenIndex, setFaqOpenIndex] = useState<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLightMode, setIsLightMode] = useLocalStorage('veda_theme', true);
+  const [gmailToken, setGmailToken] = useState<string | null>(null);
+  const [initialPreloadInput, setInitialPreloadInput] = useState<string>(() => {
+    return localStorage.getItem('veda_triage_preload') || '';
+  });
   
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [dbOffline, setDbOffline] = useState(false);
+
+  useEffect(() => {
+    const handleStatusChange = (e: Event) => {
+      const isOff = (e as CustomEvent).detail?.offline;
+      setDbOffline(!!isOff);
+    };
+    window.addEventListener('database-status', handleStatusChange);
+    return () => window.removeEventListener('database-status', handleStatusChange);
+  }, []);
 
   const [profile, setProfile] = useState<UserProfile>({
     name: '', age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
@@ -471,7 +501,7 @@ function AppContent() {
       } else {
         // Map other paths to app modes if they exist in types
         const potentialMode = path.slice(1) as AppMode;
-        const validModes: AppMode[] = ['landing', 'home', 'chat', 'symptoms', 'medication', 'lab', 'triage', 'rx', 'journal', 'score', 'patterns', 'advice', 'skin', 'food', 'mind', 'roadmap', 'opinion', 'doctor', 'hospital', 'records', 'family', 'alerts', 'medicine', 'insurance', 'reminders', 'clinic', 'corporate', 'edu', 'vitals', 'scanner', 'teleconsult', 'calendar', 'bmi', 'wearable', 'onboarding', 'auth', 'privacy', 'trust', 'wellness', 'sos', 'membership', 'locker', 'profile'];
+        const validModes: AppMode[] = ['landing', 'home', 'chat', 'symptoms', 'medication', 'lab', 'triage', 'rx', 'journal', 'score', 'patterns', 'advice', 'skin', 'food', 'mind', 'roadmap', 'opinion', 'doctor', 'hospital', 'records', 'family', 'alerts', 'medicine', 'insurance', 'reminders', 'clinic', 'corporate', 'edu', 'vitals', 'scanner', 'teleconsult', 'calendar', 'bmi', 'wearable', 'onboarding', 'auth', 'privacy', 'trust', 'wellness', 'sos', 'membership', 'locker', 'gmail', 'profile'];
         if (validModes.includes(potentialMode)) {
           setMode(potentialMode);
         } else {
@@ -712,7 +742,9 @@ function AppContent() {
     const profileRef = doc(db, 'users', user.uid);
     getDoc(profileRef).then((snap) => {
       if (snap.exists()) {
-        setProfile(snap.data() as UserProfile);
+        const pData = snap.data() as UserProfile;
+        setProfile(pData);
+        localStorage.setItem(`veda_offline_profile_${user.uid}`, JSON.stringify(pData));
       } else {
         // Initialize profile
         const newProfile: UserProfile = {
@@ -724,8 +756,30 @@ function AppContent() {
         };
         setDoc(profileRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));
         setProfile(newProfile);
+        localStorage.setItem(`veda_offline_profile_${user.uid}`, JSON.stringify(newProfile));
       }
-    }).catch(e => handleFirestoreError(e, OperationType.GET, `users/${user.uid}`));
+    }).catch(e => {
+      handleFirestoreError(e, OperationType.GET, `users/${user.uid}`);
+      // Fallback to offline local profile if Firestore fails or is blocked
+      const cached = localStorage.getItem(`veda_offline_profile_${user.uid}`);
+      if (cached) {
+        try {
+          setProfile(JSON.parse(cached));
+        } catch {
+          // ignore parsing error
+        }
+      } else {
+        // Create an offline-first default profile so the view never stays blank or crashes
+        const fallbackProfile: UserProfile = {
+          uid: user.uid,
+          email: user.email || '',
+          name: user.displayName || '',
+          age: '', sex: '', city: '', height: '', weight: '', bp: '', sugar: '', blood: '',
+          conditions: [], medicines: [], familyHistory: [], allergies: [], vaccinationHistory: [], setupDone: false
+        };
+        setProfile(fallbackProfile);
+      }
+    });
 
     // Real-time journal
     const journalUnsub = onSnapshot(collection(db, 'users', user.uid, 'journal'), (snap) => {
@@ -830,6 +884,25 @@ function AppContent() {
       }
     } else {
       switchMode('chat');
+    }
+  };
+
+  const handleStartChatWithPreload = async (text: string) => {
+    setInitialPreloadInput(text);
+    localStorage.setItem('veda_triage_preload', text);
+    if (!user) {
+      setMode('auth');
+    } else {
+      if (!activeChatId) {
+        if (conversations.length > 0) {
+          setActiveChatId(conversations[0].id);
+          switchMode('chat');
+        } else {
+          await createNewChat();
+        }
+      } else {
+        switchMode('chat');
+      }
     }
   };
 
@@ -945,6 +1018,7 @@ function AppContent() {
         await setDoc(doc(db, 'users', user.uid, 'journal', entry.date), entry);
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/journal/${entry.date}`);
+        setJournal(prev => [entry, ...prev.filter(e => e.date !== entry.date)]);
       }
     } else {
       setJournal(prev => [entry, ...prev.filter(e => e.date !== entry.date)]);
@@ -1074,6 +1148,7 @@ function AppContent() {
         email: user.email || newProfile.email || ''
       };
       setProfile(profileWithAuth);
+      localStorage.setItem(`veda_offline_profile_${user.uid}`, JSON.stringify(profileWithAuth));
       try {
         await setDoc(doc(db, 'users', user.uid), profileWithAuth);
       } catch (e) {
@@ -1329,6 +1404,41 @@ function AppContent() {
           </div>
         </div>
       </div>
+
+      {/* Interactive Lead Triage Section */}
+      <section className="py-20 bg-[var(--bg)] border-b border-[var(--border)] relative z-10">
+        <div className="max-w-[1100px] mx-auto px-6 grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
+          <div className="lg:col-span-5 space-y-6 text-left">
+            <span className="text-[var(--teal)] text-xs font-bold uppercase tracking-[2px] block">Emergency & Severity Triage</span>
+            <h2 className="font-serif text-[clamp(28px,4vw,38px)] leading-[1.15] tracking-tight text-[var(--text)]">
+              Assess your physical symptoms in <em>seconds</em>
+            </h2>
+            <p className="text-[14.5px] text-[var(--text2)] leading-relaxed opacity-90 font-medium">
+              Take the first step toward understanding your body. Our interactive triage assessor collects high-level context—such as region, pain intensity, and discomfort duration—to launch a tailored checkup inside our private health assistant.
+            </p>
+            <div className="flex flex-col gap-3 pt-2 text-xs font-semibold text-[var(--text2)]">
+              <div className="flex items-center gap-3">
+                <span className="w-5 h-5 rounded-full bg-[var(--teal)]/10 text-[var(--teal)] flex items-center justify-center text-xs font-bold font-mono shrink-0">1</span>
+                <span>Select coordinates and physical regions of active discomfort</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="w-5 h-5 rounded-full bg-[var(--teal)]/10 text-[var(--teal)] flex items-center justify-center text-xs font-bold font-mono shrink-0">2</span>
+                <span>Calibrate relative pain or pressure sensitivity level</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="w-5 h-5 rounded-full bg-[var(--teal)]/10 text-[var(--teal)] flex items-center justify-center text-xs font-bold font-mono shrink-0">3</span>
+                <span>Launch structured contextual consultation with Google Gemini</span>
+              </div>
+            </div>
+          </div>
+          <div className="lg:col-span-7">
+            <InteractiveLeadTriageWidget
+              onStartChat={handleStartChatWithPreload}
+              className="border-white/10 dark:border-white/20 shadow-2xl"
+            />
+          </div>
+        </div>
+      </section>
 
       <section className="py-24 bg-[var(--bg)]" id="features">
         <div className="max-w-[1100px] mx-auto px-6">
@@ -2041,6 +2151,9 @@ function AppContent() {
               </ul>
             </div>
           </div>
+          
+          <PatientDirectoryFooter />
+
           <div className="border-t border-[var(--border)] pt-8 flex flex-wrap items-center justify-between gap-4">
             <span className="text-[13px] text-[var(--muted)] flex items-center gap-1.5 font-semibold">© 2025 Veda Health. Made with <Heart size={14} className="text-red-400 fill-red-400" /> in India.</span>
             <div className="flex gap-5">
@@ -2117,7 +2230,9 @@ function AppContent() {
                 <SidebarItem icon={<Utensils size={18} />} label="Nutrition Planner" active={mode === 'food'} onClick={() => switchMode('food')} />
                 <SidebarItem icon={<ClipboardList size={18} />} label="Prescription Lens" active={mode === 'rx'} onClick={() => switchMode('rx')} />
                 <SidebarItem icon={<Lock size={18} />} label="Health Locker" active={mode === 'locker'} onClick={() => switchMode('locker')} />
+                <SidebarItem icon={<Mail size={18} />} label="Gmail Central" active={mode === 'gmail'} onClick={() => switchMode('gmail')} />
                 <SidebarItem icon={<BookOpen size={18} />} label="Wellness Blog" active={mode === 'blog' || mode === 'blog_article'} onClick={() => switchMode('blog')} />
+                <SidebarItem icon={<FileCheck size={18} />} label="Doctor Share Brief" active={mode === 'clinical_report'} onClick={() => switchMode('clinical_report')} />
                 <button 
                   onClick={createNewChat}
                   className="w-full flex items-center gap-3.5 px-4 py-3.5 mt-2 rounded-2xl transition-all text-sm font-bold border-2 border-dashed border-[var(--teal)]/20 text-[var(--teal)] hover:bg-[var(--teal)]/5 hover:border-[var(--teal)]/40 group active:scale-95"
@@ -2264,6 +2379,12 @@ function AppContent() {
         </button>
         <div className="flex items-center gap-3">
           <h2 className="font-serif text-2xl tracking-tight hidden xs:block text-[var(--teal)]">Veda</h2>
+          {dbOffline && (
+            <div className="flex items-center gap-1 px-2.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-500 rounded-full text-[9px] font-bold uppercase tracking-wider shrink-0 transition-all">
+              <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
+              Offline Mode
+            </div>
+          )}
         </div>
       </div>
 
@@ -2380,19 +2501,26 @@ function AppContent() {
   };
 
   const addFamilyMember = async (member: Omit<FamilyMember, 'id' | 'score'>) => {
+    const newMember = {
+      ...member,
+      id: Date.now().toString(),
+      score: 70 + Math.floor(Math.random() * 25),
+      lastCheck: new Date().toLocaleDateString('en-IN')
+    };
     if (!auth.currentUser) {
-      setFamily(prev => [...prev, { ...member, id: Date.now().toString(), score: 70 + Math.floor(Math.random() * 25) }]);
+      setFamily(prev => [...prev, newMember]);
       return;
     }
     try {
       await addDoc(collection(db, 'users', auth.currentUser.uid, 'family'), {
         ...member,
-        score: 70 + Math.floor(Math.random() * 25),
-        lastCheck: new Date().toLocaleDateString('en-IN')
+        score: newMember.score,
+        lastCheck: newMember.lastCheck
       });
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.CREATE, 'family');
+      setFamily(prev => [...prev, newMember]);
     }
   };
 
@@ -2406,6 +2534,7 @@ function AppContent() {
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.UPDATE, `family/${id}`);
+      setFamily(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
     }
   };
 
@@ -2419,39 +2548,44 @@ function AppContent() {
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.DELETE, `family/${id}`);
+      setFamily(prev => prev.filter(m => m.id !== id));
     }
   };
 
   const addRecord = async (record: Omit<MedicalRecord, 'id'>) => {
+    const newRecord = { ...record, id: Date.now().toString(), createdAt: new Date().toISOString() };
     if (!auth.currentUser) {
-      setRecords(prev => [...prev, { ...record, id: Date.now().toString() }]);
+      setRecords(prev => [...prev, newRecord]);
       return;
     }
     try {
       await addDoc(collection(db, 'users', auth.currentUser.uid, 'records'), {
         ...record,
-        createdAt: new Date().toISOString()
+        createdAt: newRecord.createdAt
       });
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/records`);
+      setRecords(prev => [...prev, newRecord]);
     }
   };
 
   const addLockerDoc = async (docData: Omit<HealthDocument, 'id'>) => {
+    const newDoc = { ...docData, id: Date.now().toString(), createdAt: new Date().toISOString(), isEncrypted: true };
     if (!auth.currentUser) {
-      setLockerDocs(prev => [...prev, { ...docData, id: Date.now().toString() }]);
+      setLockerDocs(prev => [...prev, newDoc]);
       return;
     }
     try {
       await addDoc(collection(db, 'users', auth.currentUser.uid, 'locker'), {
         ...docData,
-        createdAt: new Date().toISOString(),
+        createdAt: newDoc.createdAt,
         isEncrypted: true
       });
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/locker`);
+      setLockerDocs(prev => [...prev, newDoc]);
     }
   };
 
@@ -2465,6 +2599,7 @@ function AppContent() {
     } catch (e) {
       console.error(e);
       handleFirestoreError(e, OperationType.WRITE, `users/${auth.currentUser.uid}/locker`);
+      setLockerDocs(prev => prev.filter(d => d.id !== id));
     }
   };
 
@@ -2484,14 +2619,16 @@ function AppContent() {
   };
 
   const bookAppointment = async (appt: Omit<Appointment, 'id'>) => {
+    const newAppt = { ...appt, id: Date.now().toString() };
     if (user) {
       try {
         await addDoc(collection(db, 'users', user.uid, 'appointments'), appt);
       } catch(e) {
         handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/appointments`);
+        setAppointments(prev => [newAppt, ...prev]);
       }
     } else {
-      setAppointments(prev => [{ ...appt, id: Date.now().toString() }, ...prev]);
+      setAppointments(prev => [newAppt, ...prev]);
     }
   };
 
@@ -2612,6 +2749,8 @@ function AppContent() {
             setActiveChatId={setActiveChatId}
             onNewChat={createNewChat}
             onDeleteChat={deleteChat}
+            initialPreloadInput={initialPreloadInput}
+            setInitialPreloadInput={setInitialPreloadInput}
           />
         )}
 
@@ -2657,6 +2796,7 @@ function AppContent() {
                     symptomSlug={symptomSlug} 
                     onNavigateHome={handleNavigateHome} 
                     onSwitchMode={switchMode} 
+                    onStartChatWithPreload={handleStartChatWithPreload}
                   />
                 )}
                 {mode === 'medication' && <MedicationInfo profile={profile} />}
@@ -2670,8 +2810,24 @@ function AppContent() {
                 {mode === 'insurance' && <InsuranceView policies={policies} onAddPolicy={addPolicy} profile={profile} />}
                 {mode === 'hospital' && <HospitalView />}
                 {mode === 'doctor' && <DoctorView />}
-                {mode === 'records' && <RecordsView records={records} onAddRecord={addRecord} profile={profile} />}
+                {mode === 'records' && <RecordsView records={records} onAddRecord={addRecord} profile={profile} switchMode={switchMode} />}
+                {mode === 'clinical_report' && (
+                  <ClinicalReportBuilder 
+                    profile={profile} 
+                    journal={journal} 
+                    onBack={() => setMode('home')} 
+                    addNotification={addNotification}
+                  />
+                )}
                 {mode === 'locker' && <HealthLockerView documents={lockerDocs} onAddDocument={addLockerDoc} onDeleteDocument={deleteLockerDoc} onAddRecord={addRecord} profile={profile} />}
+                {mode === 'gmail' && (
+                  <GmailWorkspace 
+                    gmailToken={gmailToken} 
+                    setGmailToken={setGmailToken} 
+                    profile={profile} 
+                    onAddNotification={addNotification} 
+                  />
+                )}
                 {mode === 'alerts' && (
                   <AlertsView 
                     profile={profile} 
@@ -3270,6 +3426,34 @@ const HomeDashboard = memo(function HomeDashboard({
         ))}
       </div>
 
+      {/* Clinician Sharing Banner */}
+      <motion.div 
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.65 }}
+        className="p-6 bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-teal-500/10 border border-[var(--border)] rounded-[32px] flex flex-col sm:flex-row items-center justify-between gap-5 relative overflow-hidden shadow-lg"
+      >
+        <div className="absolute top-0 right-0 w-36 h-36 bg-teal-500/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex items-center gap-5">
+          <div className="w-12 h-12 rounded-2xl bg-teal-500/10 border border-teal-500/20 text-[var(--teal)] flex items-center justify-center shrink-0 shadow-lg shadow-teal-500/5">
+            <FileCheck size={22} className="text-[var(--teal)] animate-pulse" />
+          </div>
+          <div className="text-left space-y-1">
+            <span className="text-[9px] font-black text-teal-400 uppercase tracking-[0.25em]">Physician Integration</span>
+            <h4 className="text-[14.5px] font-serif font-black text-white leading-tight">Compile "Share with Doctor" Report</h4>
+            <p className="text-[11px] text-[var(--text2)] leading-relaxed font-semibold">
+              Log symptoms, physiological vitals, and prescription timelines into a clean, print-optimized clinical summary sheet.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => switchMode('clinical_report')}
+          className="px-5 py-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-[#020f0c] rounded-2xl text-xs font-black uppercase tracking-wider whitespace-nowrap active:scale-95 transition-all cursor-pointer border-none"
+        >
+          Generate Clinical Brief
+        </button>
+      </motion.div>
+
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -3491,7 +3675,9 @@ const ChatView = memo(function ChatView({
   activeChatId,
   setActiveChatId,
   onNewChat,
-  onDeleteChat
+  onDeleteChat,
+  initialPreloadInput,
+  setInitialPreloadInput
 }: { 
   chatHistory: ChatMessage[], 
   setChatHistory: any, 
@@ -3504,12 +3690,22 @@ const ChatView = memo(function ChatView({
   activeChatId: string,
   setActiveChatId: (id: string) => void,
   onNewChat: () => Promise<void>,
-  onDeleteChat: (id: string, e: React.MouseEvent) => Promise<void>
+  onDeleteChat: (id: string, e: React.MouseEvent) => Promise<void>,
+  initialPreloadInput?: string,
+  setInitialPreloadInput?: any
 }) {
   const [input, setInput] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (initialPreloadInput && setInitialPreloadInput) {
+      setInput(initialPreloadInput);
+      setInitialPreloadInput('');
+      localStorage.removeItem('veda_triage_preload');
+    }
+  }, [initialPreloadInput, setInitialPreloadInput]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -11272,7 +11468,7 @@ const HealthLockerView = memo(function HealthLockerView({ documents, onAddDocume
   );
 });
 
-const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile }) {
+const RecordsView = memo(function RecordsView({ records, onAddRecord, profile, switchMode }: { records: MedicalRecord[], onAddRecord: (record: Omit<MedicalRecord, 'id'>) => void, profile: UserProfile, switchMode?: (m: AppMode) => void }) {
   const [activeTab, setActiveTab] = useState<'all' | 'reports' | 'rx' | 'scans' | 'meds'>('all');
   const [isUploading, setIsUploading] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<MedicalRecord | null>(null);
@@ -11375,7 +11571,7 @@ const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }:
           ))}
         </div>
         
-        <div className="grid grid-cols-2 gap-4 relative z-10">
+        <div className="grid grid-cols-3 gap-4 relative z-10">
           <button 
             onClick={handleManualUpload}
             disabled={isUploading}
@@ -11392,6 +11588,15 @@ const RecordsView = memo(function RecordsView({ records, onAddRecord, profile }:
           >
             <div className="w-14 h-14 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform shadow-inner border border-blue-500/20"><Camera size={24} /></div>
             <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[var(--text)]">AI Vision</span>
+          </button>
+          <button 
+            onClick={() => switchMode?.('clinical_report')}
+            className="p-6 glass-darker border border-white/10 rounded-[44px] flex flex-col items-center gap-4 hover:bg-white/5 transition-all shadow-xl group active:scale-95"
+          >
+            <div className="w-14 h-14 rounded-2xl bg-teal-500/10 flex items-center justify-center text-teal-400 group-hover:scale-110 transition-transform shadow-inner border border-teal-500/20">
+              <FileCheck size={24} />
+            </div>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[var(--teal)]">Doctor Brief</span>
           </button>
         </div>
       </div>

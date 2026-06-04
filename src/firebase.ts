@@ -16,7 +16,7 @@ export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
   ignoreUndefinedProperties: true,
   localCache: memoryLocalCache()
-}, firebaseConfig.firestoreDatabaseId);
+}, (firebaseConfig as any).firestoreDatabaseId);
 
 // Ensure network is enabled explicitly
 enableNetwork(db).catch(console.error);
@@ -29,15 +29,24 @@ async function testConnection() {
     await getDocFromServer(testDoc);
     console.log("Firestore connection test: SUCCESS");
   } catch (error: any) {
-    console.error("Firestore connection test: FAILED", {
-      code: error.code,
-      message: error.message,
-      databaseId: firebaseConfig.firestoreDatabaseId,
-      projectId: firebaseConfig.projectId
-    });
-    
-    if (error.code === 'unavailable' || error.message?.includes('offline')) {
-      console.warn("Firestore appears to be unreachable. This may be due to browser restrictions or the database still being provisioned.");
+    const isOffline = error.code === 'unavailable' || error.message?.toLowerCase().includes('offline');
+    if (isOffline) {
+      console.warn("Firestore connection test: OFFLINE (Operating in Offline-First Local Mode)", {
+        code: error.code,
+        message: error.message,
+        databaseId: (firebaseConfig as any).firestoreDatabaseId,
+        projectId: firebaseConfig.projectId
+      });
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('database-status', { detail: { offline: true } }));
+      }
+    } else {
+      console.error("Firestore connection test: FAILED", {
+        code: error.code,
+        message: error.message,
+        databaseId: (firebaseConfig as any).firestoreDatabaseId,
+        projectId: firebaseConfig.projectId
+      });
     }
   }
 }
